@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#081321" />
+    <link rel="icon" href="data:," />
+    <title>달의 생김새가 궁금해!</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="game-canvas" aria-label="달의 탄생 과정을 보여주는 3D 장면"></canvas>
+
+      <div id="scene-vignette" aria-hidden="true"></div>
+
+      <header id="era-label" aria-live="polite">
+        <span id="era-kicker">달의 이야기</span>
+        <strong id="era-value">나는 달이야!</strong>
+      </header>
+
+      <section id="dialogue-panel" aria-live="polite" aria-label="달의 이야기">
+        <div class="dialogue-frame">
+          <div class="dialogue-name"><span class="name-spark" aria-hidden="true"></span>달</div>
+          <p id="dialogue-text"></p>
+          <div class="dialogue-footer">
+            <span id="tap-hint">화면을 탭하면 계속</span>
+            <span id="dialogue-progress" aria-label="이야기 진행도"></span>
+          </div>
+        </div>
+      </section>
+
+      <section id="observation-cta" aria-live="polite" hidden>
+        <span class="cta-kicker">다음 이야기</span>
+        <h1>실제 내 모습을 봐볼래?</h1>
+        <button id="observe-button" type="button">실제 달 관찰하기 <span aria-hidden="true">→</span></button>
+        <p id="cta-note" role="status" hidden></p>
+      </section>
+
+      <section id="observation-ui" aria-live="polite" hidden>
+        <div class="observation-toolbar">
+          <button id="observation-back" class="observation-control" type="button">
+            <span aria-hidden="true">←</span> 이야기로 돌아가기
+          </button>
+          <span class="observation-badge">실제 달 관찰</span>
+          <button id="observation-reset" class="observation-control" type="button">시점 초기화</button>
+        </div>
+
+        <div class="observation-copy">
+          <span class="observation-kicker">LUNAR SURFACE / 3D VIEW</span>
+          <h1>실제 달 관찰하기</h1>
+          <p>달을 드래그해서 돌려 보고<br />두 손가락으로 가까이 살펴보세요.</p>
+        </div>
+
+        <div id="observation-status" class="observation-status" role="status">
+          달 표면 자료를 불러오는 중…
+        </div>
+
+        <p class="observation-source">자료: NASA LRO 기반 USGS Astrogeology 달 전역 지도</p>
+      </section>
+
+      <div id="toast" role="status" aria-live="polite"></div>
+      <div id="fade-overlay" aria-hidden="true"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
