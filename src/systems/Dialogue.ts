@@ -41,6 +41,14 @@ export class Dialogue {
     this.hintElement.textContent = '대화창을 탭하면 다음 이야기';
   }
 
+  setHint(text: string): void {
+    this.hintElement.textContent = text;
+  }
+
+  setProgress(text: string): void {
+    this.progressElement.textContent = text;
+  }
+
   isTyping(): boolean {
     return this.typing;
   }

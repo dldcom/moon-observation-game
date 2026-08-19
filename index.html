@@ -13,6 +13,34 @@
 
       <div id="scene-vignette" aria-hidden="true"></div>
 
+      <section id="main-menu-ui" aria-live="polite">
+        <div class="main-menu-copy">
+          <span class="main-menu-kicker">달의 생김새가 궁금해!</span>
+          <h1>달을 만나볼까?</h1>
+          <p id="main-menu-hint">달을 클릭해 이야기를 시작해 보세요.</p>
+        </div>
+
+        <button id="main-moon-button" type="button" aria-label="달에게 말 걸기"></button>
+
+        <div id="main-menu-choices" hidden>
+          <p class="main-menu-choice-prompt">어떤 이야기를 볼까?</p>
+          <div class="main-menu-choice-list">
+            <button id="formation-choice" class="main-menu-choice" type="button">
+              <span class="main-menu-choice-number" aria-hidden="true">1</span>
+              <span>달의 형성 과정 알아보기</span>
+            </button>
+            <button id="observation-choice" class="main-menu-choice" type="button">
+              <span class="main-menu-choice-number" aria-hidden="true">2</span>
+              <span>실제 달 관찰하기</span>
+            </button>
+            <button id="game-choice" class="main-menu-choice" type="button">
+              <span class="main-menu-choice-number" aria-hidden="true">3</span>
+              <span>게임하기</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
       <header id="era-label" aria-live="polite">
         <span id="era-kicker">달의 이야기</span>
         <strong id="era-value">나는 달이야!</strong>
@@ -36,10 +64,17 @@
         <p id="cta-note" role="status" hidden></p>
       </section>
 
+      <section id="game-placeholder" aria-live="polite" hidden>
+        <span class="cta-kicker">세 번째 이야기</span>
+        <h1>게임은 곧 만나요!</h1>
+        <p>달과 함께하는 게임을 준비하고 있어요.</p>
+        <button id="game-placeholder-back" type="button">메인으로 돌아가기</button>
+      </section>
+
       <section id="observation-ui" aria-live="polite" hidden>
         <div class="observation-toolbar">
           <button id="observation-back" class="observation-control" type="button">
-            <span aria-hidden="true">←</span> 이야기로 돌아가기
+            <span aria-hidden="true">←</span> 메인으로 돌아가기
           </button>
           <span class="observation-badge">실제 달 관찰</span>
           <button id="observation-reset" class="observation-control" type="button">시점 초기화</button>
@@ -51,11 +86,59 @@
           <p>달을 드래그해서 돌려 보고<br />두 손가락으로 가까이 살펴보세요.</p>
         </div>
 
+        <div id="observation-hotspots" aria-label="달 표면 특징">
+          <button
+            class="observation-hotspot observation-hotspot--mare"
+            data-feature="mare"
+            type="button"
+            aria-label="달의 바다 자세히 보기"
+            hidden
+          >
+            <span class="observation-hotspot-ring" aria-hidden="true"></span>
+            <span class="observation-hotspot-label">달의 바다</span>
+          </button>
+          <button
+            class="observation-hotspot observation-hotspot--crater"
+            data-feature="crater"
+            type="button"
+            aria-label="충돌 구덩이 자세히 보기"
+            hidden
+          >
+            <span class="observation-hotspot-ring" aria-hidden="true"></span>
+            <span class="observation-hotspot-label">충돌 구덩이</span>
+          </button>
+        </div>
+
         <div id="observation-status" class="observation-status" role="status">
           달 표면 자료를 불러오는 중…
         </div>
 
         <p class="observation-source">자료: NASA LRO 기반 USGS Astrogeology 달 전역 지도</p>
+
+        <div
+          id="observation-feature-modal"
+          class="observation-feature-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="observation-feature-title"
+          aria-hidden="true"
+          hidden
+        >
+          <div class="observation-feature-card">
+            <button id="observation-feature-close" class="observation-feature-close" type="button" aria-label="설명 닫기">
+              <span aria-hidden="true">×</span>
+            </button>
+            <div class="observation-feature-preview">
+              <canvas id="observation-feature-preview" aria-label="선택한 달 표면의 확대 이미지"></canvas>
+              <span class="observation-feature-preview-caption">실제 달 표면 지도에서 확대한 모습</span>
+            </div>
+            <div class="observation-feature-copy">
+              <span class="observation-feature-kicker">달이 설명해요</span>
+              <h2 id="observation-feature-title"></h2>
+              <p id="observation-feature-dialogue" class="observation-feature-dialogue"></p>
+            </div>
+          </div>
+        </div>
       </section>
 
       <div id="toast" role="status" aria-live="polite"></div>

@@ -1,23 +1,26 @@
 import * as THREE from 'three';
 import { ImpactBurst } from '../entities/ImpactBurst';
 import { createMeteorResources, disposeMeteorResources, Meteor } from '../entities/Meteor';
-import { getCraterTarget, Moon, STORY_CRATER_COUNT, type MoonMode } from '../entities/Moon';
+import {
+  FORMATION_CRATER_COUNT,
+  getCraterTarget,
+  Moon,
+  STORY_CRATER_COUNT,
+  type MoonMode,
+} from '../entities/Moon';
 import { Loop } from '../core/Loop';
 import { createRenderer, resizeRenderer } from '../core/Renderer';
-import { ObservationScene } from '../scenes/ObservationScene';
+import {
+  OBSERVATION_FEATURES,
+  ObservationScene,
+  type ObservationFeatureId,
+} from '../scenes/ObservationScene';
 import { MOON_VIEW, STORY_CAMERA_DISTANCE } from '../scenes/moonComposition';
 import { Dialogue } from '../systems/Dialogue';
 
 type StoryStage = Exclude<MoonMode, 'smooth'> | 'smooth';
 type FadeState = 'idle' | 'out' | 'in';
 type MeteorWave = 'formation' | 'late';
-type FormationPointerState = {
-  active: boolean;
-  id: number | null;
-  lastX: number;
-  lastY: number;
-};
-
 type StoryLine = {
   stage: StoryStage;
   kicker: string;
@@ -87,7 +90,7 @@ const STAGE_LINE_INDEX: Record<string, number> = {
 };
 
 const FORMATION_METEOR_COUNT = 30;
-const LATE_CRATER_REVEAL_COUNT = STORY_CRATER_COUNT - 4;
+const LATE_CRATER_REVEAL_COUNT = STORY_CRATER_COUNT - FORMATION_CRATER_COUNT;
 const LATE_METEOR_COUNT = LATE_CRATER_REVEAL_COUNT * 2;
 const METEOR_SHOWER_DIRECTION = new THREE.Vector3(-0.34, -0.22, -0.91).normalize();
 const METEOR_SHOWER_SIDE = new THREE.Vector3().crossVectors(
@@ -117,11 +120,28 @@ export class Game {
   private readonly observationBackButton = this.getElement<HTMLButtonElement>('#observation-back');
   private readonly observationResetButton = this.getElement<HTMLButtonElement>('#observation-reset');
   private readonly observationStatus = this.getElement<HTMLElement>('#observation-status');
+  private readonly observationHotspots = this.getElement<HTMLElement>('#observation-hotspots');
+  private readonly observationFeatureModal = this.getElement<HTMLElement>('#observation-feature-modal');
+  private readonly observationFeatureClose = this.getElement<HTMLButtonElement>('#observation-feature-close');
+  private readonly observationFeatureTitle = this.getElement<HTMLElement>('#observation-feature-title');
+  private readonly observationFeatureDialogue = this.getElement<HTMLElement>('#observation-feature-dialogue');
+  private readonly observationFeaturePreview = this.getElement<HTMLCanvasElement>('#observation-feature-preview');
+  private readonly mainMenuUi = this.getElement<HTMLElement>('#main-menu-ui');
+  private readonly mainMenuHint = this.getElement<HTMLElement>('#main-menu-hint');
+  private readonly mainMenuMoonButton = this.getElement<HTMLButtonElement>('#main-moon-button');
+  private readonly mainMenuChoices = this.getElement<HTMLElement>('#main-menu-choices');
+  private readonly formationChoiceButton = this.getElement<HTMLButtonElement>('#formation-choice');
+  private readonly observationChoiceButton = this.getElement<HTMLButtonElement>('#observation-choice');
+  private readonly gameChoiceButton = this.getElement<HTMLButtonElement>('#game-choice');
+  private readonly gamePlaceholder = this.getElement<HTMLElement>('#game-placeholder');
+  private readonly gamePlaceholderBackButton = this.getElement<HTMLButtonElement>('#game-placeholder-back');
   private readonly fadeOverlay = this.getElement<HTMLElement>('#fade-overlay');
   private readonly halo: THREE.Mesh;
   private readonly stars: THREE.Points;
   private readonly lavaLight: THREE.PointLight;
   private readonly observationFill: THREE.HemisphereLight;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointerNdc = new THREE.Vector2();
   private readonly loop = new Loop(
     (delta) => this.update(delta),
     () => this.render(),
@@ -141,72 +161,52 @@ export class Game {
   private pausedForScreenshot = false;
   private reducedMotion = false;
   private observationMode = false;
-  private readonly formationPointer: FormationPointerState = {
-    active: false,
-    id: null,
-    lastX: 0,
-    lastY: 0,
-  };
-
+  private mainMenuActive = true;
+  private mainMenuDialogueActive = false;
+  private mainMenuChoicesVisible = false;
+  private gamePlaceholderActive = false;
   private readonly onAppPointerDown = (event: PointerEvent) => {
     const target = event.target;
     if (this.observationMode) {
-      if (target instanceof Element && target.closest('#observation-back, #observation-reset')) return;
+      if (
+        target instanceof Element &&
+        target.closest('#observation-back, #observation-reset, #observation-hotspots, #observation-feature-modal')
+      ) {
+        return;
+      }
       event.preventDefault();
       this.observation.handlePointerDown(event);
       return;
     }
-    if (target instanceof Element && target.closest('#observe-button')) return;
-    if (target instanceof Node && this.dialoguePanel.contains(target)) {
-      event.preventDefault();
-      this.advanceStory();
+    if (this.gamePlaceholderActive) return;
+    if (this.mainMenuActive) {
+      const targetElement = target instanceof Element ? target : null;
+      if (targetElement?.closest('#main-menu-choices, #main-moon-button')) return;
+      if (targetElement?.closest('#dialogue-panel')) {
+        event.preventDefault();
+        if (!this.mainMenuDialogueActive) return;
+        if (this.dialogue.isTyping()) this.dialogue.finish();
+        else this.showMainMenuChoices();
+        return;
+      }
+      if (!this.mainMenuDialogueActive && this.isMoonPointer(event)) {
+        event.preventDefault();
+        this.beginMainMenuDialogue();
+      }
       return;
     }
-    if (!this.canRotateStoryMoon()) return;
-
+    if (target instanceof Element && target.closest('#observe-button, #game-placeholder-back')) return;
     event.preventDefault();
-    this.formationPointer.active = true;
-    this.formationPointer.id = event.pointerId;
-    this.formationPointer.lastX = event.clientX;
-    this.formationPointer.lastY = event.clientY;
-    try {
-      this.app.setPointerCapture(event.pointerId);
-    } catch {
-      // Synthetic test events do not always have a capturable pointer id.
-    }
+    this.advanceStory();
   };
 
   private readonly onAppPointerMove = (event: PointerEvent) => {
-    if (this.formationPointer.active) {
-      if (event.pointerId !== this.formationPointer.id) return;
-      event.preventDefault();
-      this.moon.rotateStory(
-        event.clientX - this.formationPointer.lastX,
-        event.clientY - this.formationPointer.lastY,
-      );
-      this.retargetMeteors();
-      this.formationPointer.lastX = event.clientX;
-      this.formationPointer.lastY = event.clientY;
-      return;
-    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerMove(event);
   };
 
   private readonly onAppPointerUp = (event: PointerEvent) => {
-    if (this.formationPointer.active) {
-      if (event.pointerId !== this.formationPointer.id) return;
-      event.preventDefault();
-      this.formationPointer.active = false;
-      this.formationPointer.id = null;
-      try {
-        this.app.releasePointerCapture(event.pointerId);
-      } catch {
-        // The pointer may already have been released by the browser.
-      }
-      return;
-    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerUp(event.pointerId);
@@ -222,8 +222,25 @@ export class Game {
     if (this.observationMode) {
       if (event.code === 'Escape') {
         event.preventDefault();
-        this.exitObservationMode();
+        if (!this.observationFeatureModal.hidden) this.closeObservationFeature();
+        else this.exitObservationMode();
       }
+      return;
+    }
+    if (this.gamePlaceholderActive) {
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        this.enterMainMenu();
+      }
+      return;
+    }
+    if (this.mainMenuActive) {
+      if (event.code !== 'Space' && event.code !== 'Enter') return;
+      if (event.target instanceof HTMLButtonElement) return;
+      if (!this.mainMenuDialogueActive) return;
+      event.preventDefault();
+      if (this.dialogue.isTyping()) this.dialogue.finish();
+      else this.showMainMenuChoices();
       return;
     }
     if (event.code !== 'Space' && event.code !== 'Enter') return;
@@ -232,13 +249,34 @@ export class Game {
     this.advanceStory();
   };
 
-  private canRotateStoryMoon(): boolean {
-    return !this.observationMode && !this.ctaVisible && this.fadeState === 'idle' && this.stage !== 'character';
-  }
-
   private readonly onObserveClick = (event: MouseEvent) => {
     event.stopPropagation();
     this.enterObservationMode();
+  };
+
+  private readonly onMainMoonClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.beginMainMenuDialogue();
+  };
+
+  private readonly onFormationChoiceClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.startFormationStory();
+  };
+
+  private readonly onObservationChoiceClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.enterObservationMode();
+  };
+
+  private readonly onGameChoiceClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.showGamePlaceholder();
+  };
+
+  private readonly onGamePlaceholderBackClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.enterMainMenu();
   };
 
   private readonly onObservationBackClick = (event: MouseEvent) => {
@@ -249,6 +287,29 @@ export class Game {
   private readonly onObservationResetClick = (event: MouseEvent) => {
     event.stopPropagation();
     this.observation.reset();
+  };
+
+  private readonly onObservationHotspotPointerDown = (event: PointerEvent) => {
+    event.stopPropagation();
+  };
+
+  private readonly onObservationHotspotClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    const target = event.target;
+    const button = target instanceof Element ? target.closest<HTMLButtonElement>('[data-feature]') : null;
+    const featureId = button?.dataset.feature;
+    if (!button || !this.isObservationFeatureId(featureId)) return;
+    this.openObservationFeature(featureId);
+  };
+
+  private readonly onObservationFeatureCloseClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.closeObservationFeature();
+  };
+
+  private readonly onObservationFeatureModalClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    if (event.target === this.observationFeatureModal) this.closeObservationFeature();
   };
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -266,7 +327,7 @@ export class Game {
     this.createScene();
     this.installInput();
     this.installTestHooks();
-    this.applyLine(0, false);
+    this.enterMainMenu();
     resizeRenderer(this.renderer, this.camera, 1.5);
     this.publishDiagnostics();
   }
@@ -284,8 +345,17 @@ export class Game {
     this.app.removeEventListener('wheel', this.onAppWheel);
     window.removeEventListener('keydown', this.onKeyDown);
     this.observeButton.removeEventListener('click', this.onObserveClick);
+    this.mainMenuMoonButton.removeEventListener('click', this.onMainMoonClick);
+    this.formationChoiceButton.removeEventListener('click', this.onFormationChoiceClick);
+    this.observationChoiceButton.removeEventListener('click', this.onObservationChoiceClick);
+    this.gameChoiceButton.removeEventListener('click', this.onGameChoiceClick);
+    this.gamePlaceholderBackButton.removeEventListener('click', this.onGamePlaceholderBackClick);
     this.observationBackButton.removeEventListener('click', this.onObservationBackClick);
     this.observationResetButton.removeEventListener('click', this.onObservationResetClick);
+    this.observationHotspots.removeEventListener('pointerdown', this.onObservationHotspotPointerDown);
+    this.observationHotspots.removeEventListener('click', this.onObservationHotspotClick);
+    this.observationFeatureClose.removeEventListener('click', this.onObservationFeatureCloseClick);
+    this.observationFeatureModal.removeEventListener('click', this.onObservationFeatureModalClick);
     this.clearMeteors();
     this.clearBursts();
     disposeMeteorResources(this.meteorResources);
@@ -319,6 +389,13 @@ export class Game {
       this.updateBursts(delta);
     }
     this.updateCamera(delta);
+    if (this.mainMenuActive) {
+      this.updateMainMenuMoonButton();
+      if (this.mainMenuDialogueActive && !this.mainMenuChoicesVisible && !this.dialogue.isTyping()) {
+        this.showMainMenuChoices();
+      }
+    }
+    if (this.observationMode) this.updateObservationFeatures();
     this.lavaLight.intensity = !this.observationMode && this.stage === 'lava' ? 1.05 + Math.sin(this.elapsed * 7) * 0.12 : 0;
     this.observationFill.intensity = this.observationMode ? 1.25 : 0;
     this.stars.rotation.y = this.reducedMotion ? 0 : this.elapsed * 0.004;
@@ -410,8 +487,17 @@ export class Game {
     this.app.addEventListener('wheel', this.onAppWheel, { passive: false });
     window.addEventListener('keydown', this.onKeyDown);
     this.observeButton.addEventListener('click', this.onObserveClick);
+    this.mainMenuMoonButton.addEventListener('click', this.onMainMoonClick);
+    this.formationChoiceButton.addEventListener('click', this.onFormationChoiceClick);
+    this.observationChoiceButton.addEventListener('click', this.onObservationChoiceClick);
+    this.gameChoiceButton.addEventListener('click', this.onGameChoiceClick);
+    this.gamePlaceholderBackButton.addEventListener('click', this.onGamePlaceholderBackClick);
     this.observationBackButton.addEventListener('click', this.onObservationBackClick);
     this.observationResetButton.addEventListener('click', this.onObservationResetClick);
+    this.observationHotspots.addEventListener('pointerdown', this.onObservationHotspotPointerDown);
+    this.observationHotspots.addEventListener('click', this.onObservationHotspotClick);
+    this.observationFeatureClose.addEventListener('click', this.onObservationFeatureCloseClick);
+    this.observationFeatureModal.addEventListener('click', this.onObservationFeatureModalClick);
   }
 
   private advanceStory(): void {
@@ -467,14 +553,15 @@ export class Game {
       this.moon.setCraterCount(0);
       this.launchMeteors('formation');
     } else if (stage === 'lava') {
+      const retainedCraterCount = Math.max(this.moon.getCraterCount(), FORMATION_CRATER_COUNT);
       this.moon.setMode('lava');
-      this.moon.setCraterCount(4);
+      this.moon.setCraterCount(retainedCraterCount);
     } else {
       this.moon.setMode('cratered');
       if (this.lineIndex === STORY.length - 1) {
         this.moon.setCraterCount(STORY_CRATER_COUNT);
       } else {
-        this.moon.setCraterCount(4);
+        this.moon.setCraterCount(Math.max(this.moon.getCraterCount(), FORMATION_CRATER_COUNT));
         this.launchMeteors('late');
       }
       this.lavaLight.intensity = 0;
@@ -514,10 +601,12 @@ export class Game {
 
   private launchMeteors(wave: MeteorWave): void {
     const count = wave === 'formation' ? FORMATION_METEOR_COUNT : LATE_METEOR_COUNT;
-    const firstTargetIndex = wave === 'formation' ? 0 : 4;
 
     for (let index = 0; index < count; index += 1) {
-      const targetIndex = firstTargetIndex + (wave === 'formation' ? index % STORY_CRATER_COUNT : index);
+      const targetIndex =
+        wave === 'formation'
+          ? index % FORMATION_CRATER_COUNT
+          : FORMATION_CRATER_COUNT + (index % LATE_CRATER_REVEAL_COUNT);
       const band = index % 6;
       const row = Math.floor(index / 6);
       const distance = 5.25 + (index % 3) * 0.48 + row * 0.22;
@@ -536,20 +625,10 @@ export class Game {
         duration,
         targetIndex,
         revealsCrater:
-          wave === 'late' ? index < LATE_CRATER_REVEAL_COUNT : index < STORY_CRATER_COUNT,
+          wave === 'late' ? index < LATE_CRATER_REVEAL_COUNT : index < FORMATION_CRATER_COUNT,
       });
       this.meteors.push(meteor);
       this.scene.add(meteor.group);
-    }
-  }
-
-  private retargetMeteors(): void {
-    if (this.meteors.length === 0) return;
-
-    const pitch = this.moon.group.rotation.x;
-    const yaw = this.moon.group.rotation.y;
-    for (const meteor of this.meteors) {
-      meteor.setTarget(getCraterTarget(meteor.targetIndex, pitch, yaw));
     }
   }
 
@@ -630,9 +709,144 @@ export class Game {
     this.cta.hidden = false;
   }
 
+  private enterMainMenu(): void {
+    this.mainMenuActive = true;
+    this.mainMenuDialogueActive = false;
+    this.mainMenuChoicesVisible = false;
+    this.gamePlaceholderActive = false;
+    this.observationMode = false;
+    this.lineIndex = 0;
+    this.fadeState = 'idle';
+    this.fadeProgress = 0;
+    this.pendingStage = null;
+    this.fadeOverlay.style.opacity = '0';
+
+    this.mainMenuUi.hidden = false;
+    this.mainMenuChoices.hidden = true;
+    this.mainMenuMoonButton.hidden = false;
+    this.mainMenuHint.textContent = '달을 클릭해 이야기를 시작해 보세요.';
+    this.gamePlaceholder.hidden = true;
+    this.eraLabel.hidden = true;
+    this.dialoguePanel.hidden = true;
+    this.cta.hidden = true;
+    this.ctaVisible = false;
+    this.ctaNote.hidden = true;
+    this.observationUi.hidden = true;
+    this.observation.group.visible = false;
+    this.closeObservationFeature();
+
+    this.clearMeteors();
+    this.clearBursts();
+    this.halo.visible = true;
+    this.moon.group.visible = true;
+    this.setStage('character');
+    this.dialogue.finish();
+    this.dialogue.setHint('달을 클릭해 이야기를 시작해 보세요.');
+    this.dialogue.setProgress('');
+  }
+
+  private beginMainMenuDialogue(): void {
+    if (!this.mainMenuActive || this.mainMenuDialogueActive) return;
+
+    this.mainMenuDialogueActive = true;
+    this.mainMenuMoonButton.hidden = true;
+    this.mainMenuHint.textContent = '달이 이야기를 들려줄게.';
+    this.dialoguePanel.hidden = false;
+    this.dialogue.start('안녕? 무슨 일이야?', 0, 1);
+    this.dialogue.setProgress('');
+  }
+
+  private showMainMenuChoices(): void {
+    if (!this.mainMenuActive || !this.mainMenuDialogueActive || this.mainMenuChoicesVisible) return;
+
+    this.mainMenuChoicesVisible = true;
+    this.mainMenuChoices.hidden = false;
+    this.dialogue.finish();
+    this.dialogue.setHint('아래에서 이야기를 골라줘');
+    this.dialogue.setProgress('');
+  }
+
+  private startFormationStory(): void {
+    this.mainMenuActive = false;
+    this.mainMenuDialogueActive = false;
+    this.mainMenuChoicesVisible = false;
+    this.gamePlaceholderActive = false;
+    this.mainMenuUi.hidden = true;
+    this.mainMenuChoices.hidden = true;
+    this.mainMenuMoonButton.hidden = true;
+    this.gamePlaceholder.hidden = true;
+    this.eraLabel.hidden = false;
+    this.dialoguePanel.hidden = false;
+    this.observationUi.hidden = true;
+    this.observation.group.visible = false;
+    this.moon.group.visible = true;
+    this.cta.hidden = true;
+    this.ctaVisible = false;
+    this.ctaNote.hidden = true;
+    this.fadeState = 'idle';
+    this.fadeProgress = 0;
+    this.pendingStage = null;
+    this.fadeOverlay.style.opacity = '0';
+    this.clearMeteors();
+    this.clearBursts();
+    this.applyLine(0, false);
+  }
+
+  private showGamePlaceholder(): void {
+    if (!this.mainMenuActive) return;
+
+    this.mainMenuActive = false;
+    this.mainMenuDialogueActive = false;
+    this.mainMenuChoicesVisible = false;
+    this.gamePlaceholderActive = true;
+    this.mainMenuUi.hidden = true;
+    this.mainMenuChoices.hidden = true;
+    this.mainMenuMoonButton.hidden = true;
+    this.dialoguePanel.hidden = true;
+    this.eraLabel.hidden = true;
+    this.cta.hidden = true;
+    this.ctaVisible = false;
+    this.ctaNote.hidden = true;
+    this.observationUi.hidden = true;
+    this.observation.group.visible = false;
+    this.clearMeteors();
+    this.clearBursts();
+    this.moon.group.visible = true;
+    this.setStage('character');
+    this.gamePlaceholder.hidden = false;
+    this.gamePlaceholderBackButton.focus();
+  }
+
+  private updateMainMenuMoonButton(): void {
+    const visible = this.mainMenuActive && !this.mainMenuDialogueActive;
+    this.mainMenuMoonButton.hidden = !visible;
+  }
+
+  private isMoonPointer(event: PointerEvent): boolean {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    this.pointerNdc.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.camera.updateMatrixWorld();
+    this.moon.group.updateWorldMatrix(true, true);
+    this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+    return this.raycaster.intersectObject(this.moon.group, true).length > 0;
+  }
+
   private enterObservationMode(): void {
     if (this.observationMode) return;
 
+    this.mainMenuActive = false;
+    this.mainMenuDialogueActive = false;
+    this.mainMenuChoicesVisible = false;
+    this.gamePlaceholderActive = false;
+    this.mainMenuUi.hidden = true;
+    this.mainMenuChoices.hidden = true;
+    this.mainMenuMoonButton.hidden = true;
+    this.gamePlaceholder.hidden = true;
     this.observationMode = true;
     this.ctaVisible = false;
     this.cta.hidden = true;
@@ -641,6 +855,7 @@ export class Game {
     this.dialoguePanel.hidden = true;
     this.observationUi.hidden = false;
     this.observationStatus.textContent = '달 표면 자료를 불러오는 중…';
+    this.closeObservationFeature();
 
     this.clearMeteors();
     this.clearBursts();
@@ -654,6 +869,7 @@ export class Game {
       this.observationStatus.textContent = ready
         ? '드래그해서 돌려 보고, 두 손가락으로 확대해 보세요.'
         : '달 표면 자료를 불러오지 못했어요. 새로고침 후 다시 시도해 주세요.';
+      this.updateObservationFeatures();
     });
   }
 
@@ -662,13 +878,51 @@ export class Game {
 
     this.observationMode = false;
     this.observation.group.visible = false;
-    this.moon.group.visible = true;
-    this.eraLabel.hidden = false;
-    this.dialoguePanel.hidden = false;
     this.observationUi.hidden = true;
-    this.applyLine(STORY.length - 1, false);
-    this.dialogue.finish();
-    this.showObservationCta();
+    this.closeObservationFeature();
+    this.enterMainMenu();
+  }
+
+  private updateObservationFeatures(): void {
+    if (!this.observationMode) {
+      for (const feature of OBSERVATION_FEATURES) {
+        const button = this.observationHotspots.querySelector<HTMLButtonElement>(`[data-feature="${feature.id}"]`);
+        if (button) button.hidden = true;
+      }
+      return;
+    }
+
+    const width = this.observationUi.clientWidth || this.canvas.clientWidth;
+    const height = this.observationUi.clientHeight || this.canvas.clientHeight;
+    const ready = this.observation.getSnapshot().status === 'ready';
+
+    for (const anchor of this.observation.getFeatureAnchors(this.camera, width, height)) {
+      const button = this.observationHotspots.querySelector<HTMLButtonElement>(`[data-feature="${anchor.id}"]`);
+      if (!button) continue;
+      button.hidden = !ready || !anchor.visible;
+      button.style.left = `${anchor.x}px`;
+      button.style.top = `${anchor.y}px`;
+    }
+  }
+
+  private openObservationFeature(featureId: ObservationFeatureId): void {
+    const feature = OBSERVATION_FEATURES.find((candidate) => candidate.id === featureId);
+    if (!feature || !this.observation.drawFeaturePreview(featureId, this.observationFeaturePreview)) return;
+
+    this.observationFeatureTitle.textContent = feature.title;
+    this.observationFeatureDialogue.textContent = feature.dialogue;
+    this.observationFeatureModal.hidden = false;
+    this.observationFeatureModal.setAttribute('aria-hidden', 'false');
+    this.observationFeatureClose.focus();
+  }
+
+  private closeObservationFeature(): void {
+    this.observationFeatureModal.hidden = true;
+    this.observationFeatureModal.setAttribute('aria-hidden', 'true');
+  }
+
+  private isObservationFeatureId(value: string | undefined): value is ObservationFeatureId {
+    return OBSERVATION_FEATURES.some((feature) => feature.id === value);
   }
 
   private installTestHooks(): void {
@@ -685,6 +939,7 @@ export class Game {
           return;
         }
         if (this.observationMode) this.exitObservationMode();
+        if (this.mainMenuActive || this.gamePlaceholderActive) this.startFormationStory();
         const index = STAGE_LINE_INDEX[name];
         if (index === undefined) {
           console.warn(`Unknown test state: ${name}`);
@@ -705,6 +960,7 @@ export class Game {
   }
 
   private jumpToLine(index: number): void {
+    if (this.mainMenuActive || this.gamePlaceholderActive) this.startFormationStory();
     this.fadeState = 'idle';
     this.fadeProgress = 0;
     this.pendingStage = null;
@@ -725,7 +981,9 @@ export class Game {
       score: this.lineIndex,
       targetScore: STORY.length - 1,
       complete: this.ctaVisible || this.observationMode,
-      stage: this.observationMode ? 'observation' : this.stage,
+      stage: this.observationMode ? 'observation' : this.mainMenuActive ? 'menu' : this.stage,
+      mainMenu: this.mainMenuActive,
+      gamePlaceholder: this.gamePlaceholderActive,
       lineIndex: this.lineIndex,
       typing: this.dialogue.isTyping(),
       player: {
@@ -750,6 +1008,9 @@ export class Game {
         craterCount: this.moon.getCraterCount(),
         lavaFlowProgress: this.moon.getLavaFlowProgress(),
         lavaCoolingProgress: this.moon.getLavaCoolingProgress(),
+        lavaSourceCount: this.moon.getLavaSourceCount(),
+        activeLavaSourceCount: this.moon.getActiveLavaSourceCount(),
+        activeLavaCraterCount: this.moon.getActiveLavaCraterCount(),
       },
       observation: {
         active: this.observationMode,
@@ -762,6 +1023,7 @@ export class Game {
         textures: info.memory.textures,
       },
       meteorCount: this.meteors.length,
+      meteorTargetIndices: this.meteors.map((meteor) => meteor.targetIndex),
       burstCount: this.bursts.length,
       canvas: {
         clientWidth: this.canvas.clientWidth,

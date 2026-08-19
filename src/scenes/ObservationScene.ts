@@ -13,9 +13,111 @@ export type ObservationSnapshot = {
   distance: number;
 };
 
+export type ObservationFeatureId = 'mare' | 'crater';
+
+export type LunarCoordinate = {
+  latitude: number;
+  longitude: number;
+};
+
+export type ObservationFeatureDefinition = {
+  id: ObservationFeatureId;
+  label: string;
+  title: string;
+  dialogue: string;
+  detailImage: string;
+  center: LunarCoordinate;
+  outline: readonly LunarCoordinate[];
+};
+
+// These markers use the same planetographic, east-positive coordinates as the
+// USGS/NASA lunar maps used by the observation texture. Mare Serenitatis is
+// represented by a simplified version of the USGS Gazetteer boundary; Tycho
+// uses its measured centre and diameter so the teaching markers stay tied to
+// real lunar geography instead of an arbitrary screen position.
+const MARE_SERENITATIS_OUTLINE: readonly LunarCoordinate[] = [
+  { latitude: 34.6, longitude: 20.9 },
+  { latitude: 35.2, longitude: 25.3 },
+  { latitude: 34.9, longitude: 27.4 },
+  { latitude: 31.3, longitude: 28.0 },
+  { latitude: 27.3, longitude: 29.9 },
+  { latitude: 22.9, longitude: 29.7 },
+  { latitude: 18.5, longitude: 25.9 },
+  { latitude: 16.1, longitude: 18.6 },
+  { latitude: 18.5, longitude: 12.7 },
+  { latitude: 22.7, longitude: 8.2 },
+  { latitude: 27.8, longitude: 7.3 },
+  { latitude: 30.2, longitude: 6.8 },
+  { latitude: 33.5, longitude: 10.1 },
+  { latitude: 37.8, longitude: 15.2 },
+  { latitude: 36.6, longitude: 18.7 },
+];
+
+const TYCHO_CENTER: LunarCoordinate = {
+  latitude: -43.37,
+  longitude: -11.32,
+};
+
+function createCraterOutline(center: LunarCoordinate, radiusDegrees: number, segments: number): readonly LunarCoordinate[] {
+  const latitude = THREE.MathUtils.degToRad(center.latitude);
+  const longitude = THREE.MathUtils.degToRad(center.longitude);
+  const angularRadius = THREE.MathUtils.degToRad(radiusDegrees);
+
+  return Array.from({ length: segments }, (_, index) => {
+    const bearing = (index / segments) * Math.PI * 2;
+    const nextLatitude = Math.asin(
+      Math.sin(latitude) * Math.cos(angularRadius) +
+        Math.cos(latitude) * Math.sin(angularRadius) * Math.cos(bearing),
+    );
+    const nextLongitude =
+      longitude +
+      Math.atan2(
+        Math.sin(bearing) * Math.sin(angularRadius) * Math.cos(latitude),
+        Math.cos(angularRadius) - Math.sin(latitude) * Math.sin(nextLatitude),
+      );
+
+    return {
+      latitude: THREE.MathUtils.radToDeg(nextLatitude),
+      longitude: THREE.MathUtils.radToDeg(nextLongitude),
+    };
+  });
+}
+
+const TYCHO_OUTLINE = createCraterOutline(TYCHO_CENTER, 1.35, 32);
+
+export const OBSERVATION_FEATURES: readonly ObservationFeatureDefinition[] = [
+  {
+    id: 'mare',
+    label: '달의 바다',
+    title: '달의 바다',
+    dialogue:
+      '여기는 달의 바다야. 물이 있는 바다가 아니라, 아주 오래전 흘러나온 용암이 굳어 주변보다 어둡고 평평하게 보이는 곳이지.',
+    detailImage: '/assets/moon/details/mare-serenitatis-detail.jpg',
+    center: { latitude: 27.29, longitude: 18.36 },
+    outline: MARE_SERENITATIS_OUTLINE,
+  },
+  {
+    id: 'crater',
+    label: '충돌 구덩이',
+    title: '충돌 구덩이',
+    dialogue:
+      '여기는 충돌 구덩이야. 우주에서 날아온 돌이 달 표면에 부딪혀 만든 둥근 움푹한 자국이지. 달에는 이런 충돌 구덩이가 아주 많아.',
+    detailImage: '/assets/moon/details/tycho-crater-detail.jpg',
+    center: TYCHO_CENTER,
+    outline: TYCHO_OUTLINE,
+  },
+];
+
 type PointerPosition = {
   x: number;
   y: number;
+};
+
+export type ObservationFeatureAnchor = {
+  id: ObservationFeatureId;
+  x: number;
+  y: number;
+  visible: boolean;
 };
 
 /**
@@ -27,6 +129,7 @@ export class ObservationScene {
   readonly group = new THREE.Group();
 
   private readonly moonGroup = new THREE.Group();
+  private readonly featureHighlights = new THREE.Group();
   private readonly geometry = new THREE.SphereGeometry(MOON_VIEW.observationRadius, 72, 48);
   private readonly material = new THREE.MeshStandardMaterial({
     color: '#f1eee5',
@@ -40,6 +143,8 @@ export class ObservationScene {
   private readonly loader = new THREE.TextureLoader();
   private readonly pointers = new Map<number, PointerPosition>();
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly featureMaterials = new Map<ObservationFeatureId, THREE.LineBasicMaterial>();
+  private readonly featureDetailTextures = new Map<ObservationFeatureId, THREE.Texture>();
 
   private texture: THREE.Texture | null = null;
   private loadPromise: Promise<boolean> | null = null;
@@ -47,7 +152,7 @@ export class ObservationScene {
   private disposed = false;
   private pinchDistance = 0;
   private dragging = false;
-  private yaw: number = MOON_VIEW.yaw;
+  private yaw: number = MOON_VIEW.observationYaw;
   private pitch: number = MOON_VIEW.pitch;
   private distance: number = MOON_VIEW.observationMaxDistance;
   private spinVelocity = 0;
@@ -58,6 +163,8 @@ export class ObservationScene {
     this.moon.castShadow = false;
     this.moon.receiveShadow = true;
     this.moonGroup.add(this.moon);
+    this.createFeatureHighlights();
+    this.moonGroup.add(this.featureHighlights);
     this.group.add(this.moonGroup);
     this.group.visible = false;
     this.applyRotation();
@@ -86,8 +193,16 @@ export class ObservationScene {
           this.material.bumpMap = cleanTexture;
           this.material.bumpScale = 0.028;
           this.material.needsUpdate = true;
-          this.status = 'ready';
-          resolve(true);
+          void this.loadFeatureDetails().then((detailsReady) => {
+            if (!detailsReady || this.disposed) {
+              if (!this.disposed) this.status = 'error';
+              resolve(false);
+              return;
+            }
+            this.featureHighlights.visible = true;
+            this.status = 'ready';
+            resolve(true);
+          });
         },
         undefined,
         (_error) => {
@@ -162,7 +277,7 @@ export class ObservationScene {
   }
 
   reset(): void {
-    this.yaw = MOON_VIEW.yaw;
+    this.yaw = MOON_VIEW.observationYaw;
     this.pitch = MOON_VIEW.pitch;
     this.distance = MOON_VIEW.observationMaxDistance;
     this.spinVelocity = 0;
@@ -187,10 +302,76 @@ export class ObservationScene {
     };
   }
 
+  getFeatureAnchors(camera: THREE.Camera, width: number, height: number): ObservationFeatureAnchor[] {
+    camera.updateMatrixWorld(true);
+    this.group.updateWorldMatrix(true, true);
+
+    const cameraPosition = camera.getWorldPosition(new THREE.Vector3());
+    const moonCenter = this.group.getWorldPosition(new THREE.Vector3());
+    const anchors: ObservationFeatureAnchor[] = [];
+
+    for (const feature of OBSERVATION_FEATURES) {
+      const localNormal = this.coordinateToNormal(feature.center);
+      const worldNormal = localNormal
+        .clone()
+        .transformDirection(this.moonGroup.matrixWorld)
+        .normalize();
+      const worldPoint = moonCenter.clone().addScaledVector(worldNormal, MOON_VIEW.observationRadius);
+      const toCamera = cameraPosition.clone().sub(worldPoint).normalize();
+      const visible = worldNormal.dot(toCamera) > 0.12;
+      const projected = worldPoint.clone().project(camera);
+      const inViewport = projected.z > -1 && projected.z < 1;
+
+      anchors.push({
+        id: feature.id,
+        x: (projected.x * 0.5 + 0.5) * width,
+        y: (-projected.y * 0.5 + 0.5) * height,
+        visible: visible && inViewport,
+      });
+    }
+
+    return anchors;
+  }
+
+  drawFeaturePreview(featureId: ObservationFeatureId, canvas: HTMLCanvasElement): boolean {
+    const feature = OBSERVATION_FEATURES.find((candidate) => candidate.id === featureId);
+    const source = this.featureDetailTextures.get(featureId)?.image as
+      | (CanvasImageSource & { width: number; height: number })
+      | undefined;
+    if (!feature || !source?.width || !source.height) return false;
+
+    const outputWidth = 720;
+    const outputHeight = 480;
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    const context = canvas.getContext('2d');
+    if (!context) return false;
+
+    const destinationScale = Math.min(outputWidth / source.width, outputHeight / source.height);
+    const destinationWidth = source.width * destinationScale;
+    const destinationHeight = source.height * destinationScale;
+    const destinationX = (outputWidth - destinationWidth) / 2;
+    const destinationY = (outputHeight - destinationHeight) / 2;
+
+    context.fillStyle = '#091522';
+    context.fillRect(0, 0, outputWidth, outputHeight);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(source, 0, 0, source.width, source.height, destinationX, destinationY, destinationWidth, destinationHeight);
+    return true;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.geometry.dispose();
     this.material.dispose();
+    for (const child of this.featureHighlights.children) {
+      if (child instanceof THREE.Line) child.geometry.dispose();
+    }
+    for (const material of this.featureMaterials.values()) material.dispose();
+    this.featureMaterials.clear();
+    for (const texture of this.featureDetailTextures.values()) texture.dispose();
+    this.featureDetailTextures.clear();
     this.texture?.dispose();
     this.texture = null;
     this.pointers.clear();
@@ -198,6 +379,63 @@ export class ObservationScene {
 
   private zoomBy(amount: number): void {
     this.distance = THREE.MathUtils.clamp(this.distance + amount, MIN_DISTANCE, MOON_VIEW.observationMaxDistance);
+  }
+
+  private createFeatureHighlights(): void {
+    this.featureHighlights.name = 'observation-feature-highlights';
+    this.featureHighlights.visible = false;
+    this.featureHighlights.renderOrder = 2;
+
+    for (const feature of OBSERVATION_FEATURES) {
+      const points = feature.outline.map((coordinate) =>
+        this.coordinateToNormal(coordinate).multiplyScalar(MOON_VIEW.observationRadius * 1.006),
+      );
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({
+        color: '#f8ca67',
+        transparent: true,
+        opacity: 0.98,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const line = new THREE.LineLoop(geometry, material);
+      line.name = `observation-${feature.id}-outline`;
+      line.renderOrder = 2;
+      this.featureHighlights.add(line);
+      this.featureMaterials.set(feature.id, material);
+    }
+  }
+
+  private coordinateToNormal(coordinate: LunarCoordinate): THREE.Vector3 {
+    const theta = THREE.MathUtils.degToRad(90 - coordinate.latitude);
+    const phi = THREE.MathUtils.degToRad(coordinate.longitude + 180);
+    return new THREE.Vector3(
+      -Math.cos(phi) * Math.sin(theta),
+      Math.cos(theta),
+      Math.sin(phi) * Math.sin(theta),
+    ).normalize();
+  }
+
+  private async loadFeatureDetails(): Promise<boolean> {
+    const loaded: Array<{ id: ObservationFeatureId; texture: THREE.Texture }> = [];
+
+    try {
+      for (const feature of OBSERVATION_FEATURES) {
+        loaded.push({ id: feature.id, texture: await this.loader.loadAsync(feature.detailImage) });
+      }
+    } catch (_error) {
+      for (const entry of loaded) entry.texture.dispose();
+      return false;
+    }
+
+    if (this.disposed) {
+      for (const entry of loaded) entry.texture.dispose();
+      return false;
+    }
+
+    for (const entry of loaded) this.featureDetailTextures.set(entry.id, entry.texture);
+    return true;
   }
 
   private createCleanTexture(source: THREE.Texture): THREE.CanvasTexture {

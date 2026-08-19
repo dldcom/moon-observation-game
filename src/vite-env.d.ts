@@ -7,6 +7,8 @@ interface ThreeGameDiagnostics {
   targetScore: number;
   complete: boolean;
   stage: string;
+  mainMenu: boolean;
+  gamePlaceholder: boolean;
   lineIndex: number;
   typing: boolean;
   player: {
@@ -20,8 +22,12 @@ interface ThreeGameDiagnostics {
     craterCount: number;
     lavaFlowProgress: number;
     lavaCoolingProgress: number;
+    lavaSourceCount: number;
+    activeLavaSourceCount: number;
+    activeLavaCraterCount: number;
   };
   meteorCount: number;
+  meteorTargetIndices: number[];
   burstCount: number;
   observation: {
     active: boolean;

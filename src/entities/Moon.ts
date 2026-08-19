@@ -11,7 +11,8 @@ const HOT_LAVA_COLOR = new THREE.Color('#ff7a35');
 const COOL_LAVA_COLOR = new THREE.Color('#34251f');
 const HOT_LAVA_EMISSIVE = new THREE.Color('#e64920');
 const COOL_LAVA_EMISSIVE = new THREE.Color('#120f0e');
-const MOON_SURFACE_BASE_COLOR = '#b6b8bb';
+export const LAVA_SOURCE_INDICES = [0, 2, 3] as const;
+const LAVA_SOURCE_SET = new Set<number>(LAVA_SOURCE_INDICES);
 
 const CRATER_NORMALS = [
   // A few medium landmarks, followed by many smaller impacts. The uneven
@@ -28,16 +29,41 @@ const CRATER_NORMALS = [
   new THREE.Vector3(-0.08, -0.56, 0.82).normalize(),
   new THREE.Vector3(0.30, -0.62, 0.72).normalize(),
   new THREE.Vector3(0.74, -0.44, 0.52).normalize(),
+  // A second, smaller set is reserved for the later meteor wave. Keeping
+  // these targets separate makes the passage of time read as new impacts,
+  // instead of making the same scars flash twice.
+  new THREE.Vector3(-0.84, 0.44, 0.42).normalize(),
+  new THREE.Vector3(0.82, 0.48, 0.40).normalize(),
+  new THREE.Vector3(-0.90, -0.16, 0.34).normalize(),
+  new THREE.Vector3(0.88, -0.24, 0.34).normalize(),
+  new THREE.Vector3(-0.70, -0.72, 0.28).normalize(),
+  new THREE.Vector3(0.06, 0.82, 0.56).normalize(),
+  new THREE.Vector3(-0.10, -0.84, 0.50).normalize(),
+  new THREE.Vector3(0.68, 0.02, 0.72).normalize(),
 ];
 
-const CRATER_RADII = [0.27, 0.2, 0.17, 0.14, 0.12, 0.1, 0.09, 0.14, 0.11, 0.085, 0.1, 0.075];
-const CRATER_DEPTHS = [0.065, 0.05, 0.043, 0.035, 0.03, 0.026, 0.023, 0.035, 0.028, 0.021, 0.025, 0.018];
+const CRATER_RADII = [
+  0.27, 0.2, 0.17, 0.14, 0.12, 0.1, 0.09, 0.14, 0.11, 0.085, 0.1, 0.075,
+  0.068, 0.062, 0.056, 0.052, 0.048, 0.045, 0.042, 0.04,
+];
+const CRATER_DEPTHS = [
+  0.065, 0.05, 0.043, 0.035, 0.03, 0.026, 0.023, 0.035, 0.028, 0.021, 0.025, 0.018,
+  0.017, 0.016, 0.015, 0.014, 0.013, 0.012, 0.011, 0.01,
+];
+export const FORMATION_CRATER_COUNT = 12;
 export const STORY_CRATER_COUNT = CRATER_NORMALS.length;
 
 type CraterSlot = {
   group: THREE.Group;
   basin: THREE.Mesh;
   lava: THREE.Mesh;
+};
+
+type MariaPatchSlot = {
+  sourceIndex: number;
+  cooled: THREE.Mesh;
+  flow: THREE.Mesh;
+  delay: number;
 };
 
 export function getCraterTarget(index: number, pitch: number = MOON_VIEW.pitch, yaw: number = MOON_VIEW.yaw): THREE.Vector3 {
@@ -63,11 +89,12 @@ export class Moon {
   private readonly craterLayer = new THREE.Group();
   private readonly mariaLayer = new THREE.Group();
   private readonly craterSlots: CraterSlot[] = [];
-  private readonly mariaPatches: THREE.Mesh[] = [];
+  private readonly mariaPatches: MariaPatchSlot[] = [];
   private readonly craterBasinMaterial = new THREE.MeshStandardMaterial({
-    color: MOON_SURFACE_BASE_COLOR,
-    roughness: 0.94,
+    color: '#ffffff',
+    roughness: 0.98,
     metalness: 0,
+    vertexColors: true,
   });
   private readonly mariaMaterial: THREE.MeshStandardMaterial;
   private readonly lavaMaterial = new THREE.MeshStandardMaterial({
@@ -116,7 +143,7 @@ export class Moon {
       roughness: 1,
       metalness: 0,
       transparent: true,
-      opacity: 0.72,
+      opacity: 1,
       alphaTest: 0.02,
       depthWrite: false,
     });
@@ -167,6 +194,7 @@ export class Moon {
         slot.lava.scale.set(fill, fill * 0.84, 1);
       }
     }
+    this.updateMariaPatches();
   }
 
   setMode(mode: MoonMode): void {
@@ -211,7 +239,6 @@ export class Moon {
     if (mode === 'smooth') this.setCraterCount(0);
     if (mode === 'impacts') this.setCraterCount(Math.min(this.craterCount, 1));
     if (mode === 'lava') this.setCraterCount(Math.max(this.craterCount, 3));
-    if (mode === 'cratered') this.setCraterCount(this.craterSlots.length);
   }
 
   revealNextCrater(): number {
@@ -225,17 +252,12 @@ export class Moon {
     this.craterCount = THREE.MathUtils.clamp(Math.floor(count), 0, this.craterSlots.length);
     this.craterSlots.forEach((slot, index) => {
       slot.group.visible = index < this.craterCount;
-      slot.lava.visible = this.mode === 'lava' && index < this.craterCount;
+      slot.lava.visible = this.mode === 'lava' && LAVA_SOURCE_SET.has(index) && index < this.craterCount;
     });
   }
 
   getMode(): MoonMode {
     return this.mode;
-  }
-
-  rotateStory(deltaX: number, deltaY: number): void {
-    this.storyYaw += deltaX * 0.008;
-    this.storyPitch = THREE.MathUtils.clamp(this.storyPitch + deltaY * 0.006, -0.78, 0.78);
   }
 
   getCraterCount(): number {
@@ -248,6 +270,18 @@ export class Moon {
 
   getLavaCoolingProgress(): number {
     return this.lavaCoolingProgress;
+  }
+
+  getLavaSourceCount(): number {
+    return LAVA_SOURCE_INDICES.length;
+  }
+
+  getActiveLavaSourceCount(): number {
+    return this.craterSlots.reduce((count, slot, index) => count + (slot.lava.visible && LAVA_SOURCE_SET.has(index) ? 1 : 0), 0);
+  }
+
+  getActiveLavaCraterCount(): number {
+    return this.craterSlots.reduce((count, slot) => count + (slot.lava.visible ? 1 : 0), 0);
   }
 
   dispose(): void {
@@ -272,7 +306,10 @@ export class Moon {
       slot.basin.geometry.dispose();
       slot.lava.geometry.dispose();
     }
-    for (const patch of this.mariaPatches) patch.geometry.dispose();
+    for (const patch of this.mariaPatches) {
+      patch.cooled.geometry.dispose();
+      patch.flow.geometry.dispose();
+    }
   }
 
   private createMoonGeometry(): THREE.SphereGeometry {
@@ -345,13 +382,14 @@ export class Moon {
         const dy = (y - center) / center;
         const distance = Math.sqrt(dx * dx + dy * dy);
         const edge = THREE.MathUtils.clamp((0.96 - distance) / 0.22, 0, 1);
-        // Keep the maria edge soft without a repeating high-frequency pattern;
-        // a tiny tiled pattern reads as a texture bug at tablet resolution.
-        const alpha = Math.round(edge * edge * 175);
+        // Keep the interior opaque and only soften the outer edge. A mostly
+        // transparent gray texture made the cooled sea reveal the bright Moon
+        // surface underneath and turn gray again in the final stage.
+        const alpha = Math.round(edge * edge * 255);
         const offset = (y * size + x) * 4;
-        image.data[offset] = 92;
-        image.data[offset + 1] = 88;
-        image.data[offset + 2] = 80;
+        image.data[offset] = 52;
+        image.data[offset + 1] = 37;
+        image.data[offset + 2] = 31;
         image.data[offset + 3] = alpha;
       }
     }
@@ -434,29 +472,35 @@ export class Moon {
 
   private createMariaPatches(): void {
     const patches = [
-      // Broad maria on the near side, translated from the familiar lunar map:
-      // one dominant western plain, a second upper basin, then smaller nearby
-      // plains rather than three equally-sized floating decals.
-      { normal: new THREE.Vector3(0.56, 0.2, 0.8).normalize(), radius: 0.82, verticalScale: 0.7, seed: 31 },
-      { normal: new THREE.Vector3(0.24, 0.52, 0.82).normalize(), radius: 0.58, verticalScale: 0.68, seed: 37 },
-      { normal: new THREE.Vector3(-0.08, -0.35, 0.93).normalize(), radius: 0.43, verticalScale: 0.78, seed: 43 },
-      { normal: new THREE.Vector3(0.55, -0.14, 0.82).normalize(), radius: 0.36, verticalScale: 0.78, seed: 47 },
-      { normal: new THREE.Vector3(0.22, -0.43, 0.88).normalize(), radius: 0.3, verticalScale: 0.76, seed: 53 },
-      { normal: new THREE.Vector3(-0.48, 0.18, 0.86).normalize(), radius: 0.25, verticalScale: 0.82, seed: 59 },
+      // Maria grows outward from only a few large impact basins. Keep the
+      // footprint rounded and crater-led; a long flat ellipse reads as a
+      // sticker sliding across the Moon instead of lava filling a basin.
+      { sourceIndex: 0, radius: 0.58, seed: 31, delay: 0 },
+      { sourceIndex: 2, radius: 0.5, seed: 37, delay: 0.12 },
+      { sourceIndex: 3, radius: 0.68, seed: 47, delay: 0.24 },
     ];
 
     for (const patch of patches) {
+      const normal = CRATER_NORMALS[patch.sourceIndex];
       const group = new THREE.Group();
-      group.position.copy(patch.normal).multiplyScalar(BODY_RADIUS + 0.008);
-      group.quaternion.setFromUnitVectors(FRONT, patch.normal);
-      const mesh = new THREE.Mesh(
-        this.createPatchGeometry(patch.radius, patch.seed, patch.verticalScale),
+      group.position.copy(normal).multiplyScalar(BODY_RADIUS + 0.012);
+      group.quaternion.setFromUnitVectors(FRONT, normal);
+
+      const cooled = new THREE.Mesh(
+        this.createSpreadGeometry(patch.radius, patch.seed, 0.018),
         this.mariaMaterial,
       );
-      mesh.position.z = 0.004;
-      group.add(mesh);
+      cooled.visible = false;
+
+      const flow = new THREE.Mesh(
+        this.createSpreadGeometry(patch.radius * 0.78, patch.seed + 71, 0.028),
+        this.lavaMaterial,
+      );
+      flow.visible = false;
+
+      group.add(cooled, flow);
       this.mariaLayer.add(group);
-      this.mariaPatches.push(mesh);
+      this.mariaPatches.push({ sourceIndex: patch.sourceIndex, cooled, flow, delay: patch.delay });
     }
   }
 
@@ -464,16 +508,27 @@ export class Moon {
     const segments = 18;
     const rings = 3;
     const positions: number[] = [0, 0, -depth];
+    const colors: number[] = [];
     const indices: number[] = [];
+    const basinColors = [
+      new THREE.Color('#514b43'),
+      new THREE.Color('#605950'),
+      new THREE.Color('#70695e'),
+      new THREE.Color('#80786c'),
+    ];
+    const centerColor = basinColors[0];
+    colors.push(centerColor.r, centerColor.g, centerColor.b);
 
     for (let ring = 1; ring <= rings; ring += 1) {
       const t = ring / rings;
+      const ringColor = basinColors[ring];
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = (segment / segments) * Math.PI * 2;
         const wobble = 1 + Math.sin(angle * (2 + (seed % 3)) + seed) * 0.075 + Math.sin(angle * 5 - seed) * 0.035;
         const ringRadius = radius * t * wobble;
         const z = -depth * Math.pow(1 - t, 1.45);
         positions.push(Math.cos(angle) * ringRadius, Math.sin(angle) * ringRadius, z);
+        colors.push(ringColor.r, ringColor.g, ringColor.b);
       }
     }
 
@@ -499,6 +554,7 @@ export class Moon {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     return geometry;
@@ -524,19 +580,58 @@ export class Moon {
     return geometry;
   }
 
-  private createPatchGeometry(radius: number, seed: number, verticalScale = 0.72): THREE.BufferGeometry {
-    const segments = 28;
-    const positions: number[] = [0, 0, 0];
+  private createSpreadGeometry(radius: number, seed: number, surfaceOffset: number): THREE.BufferGeometry {
+    const segments = 32;
+    const rings = 3;
+    const baseRadius = BODY_RADIUS + 0.012;
+    const surfaceRadius = BODY_RADIUS + surfaceOffset;
+    const positions: number[] = [];
     const uvs: number[] = [0.5, 0.5];
     const indices: number[] = [];
 
+    const surfaceZ = (x: number, y: number): number => {
+      // Wrap the mare over the Moon's surface. The previous tangent-plane
+      // decal became a thin projected slash once it grew beyond the crater.
+      const height = Math.sqrt(Math.max(surfaceRadius * surfaceRadius - x * x - y * y, 0.0001));
+      return height - baseRadius;
+    };
+
+    positions.push(0, 0, surfaceZ(0, 0));
+
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const progress = ring / rings;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const angle = (segment / segments) * Math.PI * 2;
+        const wobble =
+          1 +
+          Math.sin(angle * 2 + seed) * 0.1 +
+          Math.sin(angle * 3 - seed * 0.7) * 0.055 +
+          Math.sin(angle * 7 + seed * 0.35) * 0.025;
+        const x = Math.cos(angle) * radius * progress * wobble;
+        const y = Math.sin(angle) * radius * progress * wobble;
+        positions.push(x, y, surfaceZ(x, y));
+        uvs.push(0.5 + (x / radius) * 0.5, 0.5 + (y / radius) * 0.5);
+      }
+    }
+
     for (let segment = 0; segment < segments; segment += 1) {
-      const angle = (segment / segments) * Math.PI * 2;
-      const wobble = 1 + Math.sin(angle * 2 + seed) * 0.12 + Math.sin(angle * 5 - seed) * 0.05;
-      positions.push(Math.cos(angle) * radius * wobble, Math.sin(angle) * radius * wobble * verticalScale, 0);
-      uvs.push(0.5 + Math.cos(angle) * 0.5, 0.5 + Math.sin(angle) * 0.5);
       const next = (segment + 1) % segments;
       indices.push(0, 1 + segment, 1 + next);
+    }
+    for (let ring = 1; ring < rings; ring += 1) {
+      const currentStart = 1 + (ring - 1) * segments;
+      const nextStart = currentStart + segments;
+      for (let segment = 0; segment < segments; segment += 1) {
+        const next = (segment + 1) % segments;
+        indices.push(
+          currentStart + segment,
+          nextStart + segment,
+          currentStart + next,
+          currentStart + next,
+          nextStart + segment,
+          nextStart + next,
+        );
+      }
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -549,8 +644,31 @@ export class Moon {
 
   private setLavaVisibility(visible: boolean): void {
     this.craterSlots.forEach((slot, index) => {
-      slot.lava.visible = visible && index < this.craterCount;
+      slot.lava.visible = visible && LAVA_SOURCE_SET.has(index) && index < this.craterCount;
     });
+  }
+
+  private updateMariaPatches(): void {
+    const isLava = this.mode === 'lava';
+    const isCratered = this.mode === 'cratered';
+    const flowProgress = isLava || isCratered ? this.lavaFlowProgress : 0;
+    const coolingProgress = isLava || isCratered ? this.lavaCoolingProgress : 0;
+
+    for (const patch of this.mariaPatches) {
+      const sourceVisible = this.craterCount > patch.sourceIndex;
+      const localProgress = THREE.MathUtils.clamp(
+        (flowProgress - patch.delay) / (1 - patch.delay),
+        0,
+        1,
+      );
+      const spread = THREE.MathUtils.smoothstep(localProgress, 0, 1);
+      const scale = 0.08 + spread * 0.92;
+
+      patch.flow.visible = isLava && sourceVisible && localProgress > 0.005;
+      patch.flow.scale.setScalar(scale);
+      patch.cooled.visible = (isLava || isCratered) && sourceVisible && coolingProgress > 0.01;
+      patch.cooled.scale.setScalar(scale);
+    }
   }
 
   private updateLavaMaterials(time: number): void {
@@ -563,6 +681,6 @@ export class Moon {
         : 0;
     // The dark maria are the cooled result of the flow. They fade in only
     // after the orange lava has spread, instead of existing underneath it.
-    this.mariaMaterial.opacity = this.mode === 'lava' ? cooling * 0.86 : this.mode === 'cratered' ? 0.86 : 0;
+    this.mariaMaterial.opacity = this.mode === 'lava' ? cooling : this.mode === 'cratered' ? 1 : 0;
   }
 }
