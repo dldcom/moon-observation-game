@@ -15,9 +15,14 @@ interface ThreeGameDiagnostics {
   };
   moon: {
     position: { x: number; y: number; z: number };
+    rotation: { yaw: number; pitch: number };
     mode: string;
     craterCount: number;
+    lavaFlowProgress: number;
+    lavaCoolingProgress: number;
   };
+  meteorCount: number;
+  burstCount: number;
   observation: {
     active: boolean;
     status: 'idle' | 'loading' | 'ready' | 'error';

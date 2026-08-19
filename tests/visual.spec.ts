@@ -39,6 +39,10 @@ async function finishAndTap(page: import('@playwright/test').Page): Promise<void
   await page.waitForFunction(() => window.__THREE_GAME_DIAGNOSTICS__?.typing === false);
   const previousLine = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.lineIndex ?? -1);
   await page.mouse.click(40, 180);
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.lineIndex ?? -1))
+    .toBe(previousLine);
+  await page.locator('#dialogue-panel').click();
   await page.waitForFunction(
     (lineIndex) => (window.__THREE_GAME_DIAGNOSTICS__?.lineIndex ?? lineIndex) > lineIndex,
     previousLine,
@@ -70,13 +74,43 @@ test('narrative slice renders and progresses through the 3D moon formation story
   await finishAndTap(page); // smooth face -> meteors
   await expect.poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.stage)).toBe('impacts');
   await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.meteorCount ?? 0))
+    .toBeGreaterThan(18);
+  const canvasBox = await page.locator('#game-canvas').boundingBox();
+  expect(canvasBox).not.toBeNull();
+  if (canvasBox) {
+    const startYaw = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.rotation?.yaw ?? 0);
+    await page.mouse.move(canvasBox.x + canvasBox.width * 0.5, canvasBox.y + canvasBox.height * 0.36);
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.x + canvasBox.width * 0.64, canvasBox.y + canvasBox.height * 0.36, { steps: 4 });
+    await page.mouse.up();
+    await expect
+      .poll(async () => {
+        const yaw = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.rotation?.yaw ?? 0);
+        return Math.abs(yaw - startYaw);
+      })
+      .toBeGreaterThan(0.2);
+  }
+  await expect
     .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.craterCount ?? 0))
     .toBeGreaterThan(0);
 
   await finishAndTap(page); // impacts -> lava
   await expect.poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.stage)).toBe('lava');
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.lavaFlowProgress ?? 0))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.lavaCoolingProgress ?? 0))
+    .toBeGreaterThan(0);
   await finishAndTap(page); // lava -> final craters
   await expect.poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.stage)).toBe('cratered');
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.meteorCount ?? 0))
+    .toBeGreaterThan(8);
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.moon.craterCount ?? 0))
+    .toBe(12);
   await finishAndTap(page); // final -> observation CTA
   await expect(page.locator('#observation-cta')).toBeVisible();
   await page.locator('#observe-button').click();

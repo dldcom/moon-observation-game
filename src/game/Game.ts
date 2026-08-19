@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ImpactBurst } from '../entities/ImpactBurst';
-import { Meteor } from '../entities/Meteor';
+import { createMeteorResources, disposeMeteorResources, Meteor } from '../entities/Meteor';
 import { getCraterTarget, Moon, STORY_CRATER_COUNT, type MoonMode } from '../entities/Moon';
 import { Loop } from '../core/Loop';
 import { createRenderer, resizeRenderer } from '../core/Renderer';
@@ -10,6 +10,13 @@ import { Dialogue } from '../systems/Dialogue';
 
 type StoryStage = Exclude<MoonMode, 'smooth'> | 'smooth';
 type FadeState = 'idle' | 'out' | 'in';
+type MeteorWave = 'formation' | 'late';
+type FormationPointerState = {
+  active: boolean;
+  id: number | null;
+  lastX: number;
+  lastY: number;
+};
 
 type StoryLine = {
   stage: StoryStage;
@@ -79,6 +86,15 @@ const STAGE_LINE_INDEX: Record<string, number> = {
   complete: 7,
 };
 
+const FORMATION_METEOR_COUNT = 30;
+const LATE_CRATER_REVEAL_COUNT = STORY_CRATER_COUNT - 4;
+const LATE_METEOR_COUNT = LATE_CRATER_REVEAL_COUNT * 2;
+const METEOR_SHOWER_DIRECTION = new THREE.Vector3(-0.34, -0.22, -0.91).normalize();
+const METEOR_SHOWER_SIDE = new THREE.Vector3().crossVectors(
+  METEOR_SHOWER_DIRECTION,
+  new THREE.Vector3(0, 1, 0),
+).normalize();
+
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
@@ -88,6 +104,7 @@ export class Game {
   private readonly dialogue = new Dialogue();
   private readonly meteors: Meteor[] = [];
   private readonly bursts: ImpactBurst[] = [];
+  private readonly meteorResources = createMeteorResources();
   private readonly eraLabel = this.getElement<HTMLElement>('#era-label');
   private readonly dialoguePanel = this.getElement<HTMLElement>('#dialogue-panel');
   private readonly eraKicker = this.getElement('#era-kicker');
@@ -124,6 +141,12 @@ export class Game {
   private pausedForScreenshot = false;
   private reducedMotion = false;
   private observationMode = false;
+  private readonly formationPointer: FormationPointerState = {
+    active: false,
+    id: null,
+    lastX: 0,
+    lastY: 0,
+  };
 
   private readonly onAppPointerDown = (event: PointerEvent) => {
     const target = event.target;
@@ -134,17 +157,56 @@ export class Game {
       return;
     }
     if (target instanceof Element && target.closest('#observe-button')) return;
+    if (target instanceof Node && this.dialoguePanel.contains(target)) {
+      event.preventDefault();
+      this.advanceStory();
+      return;
+    }
+    if (!this.canRotateStoryMoon()) return;
+
     event.preventDefault();
-    this.advanceStory();
+    this.formationPointer.active = true;
+    this.formationPointer.id = event.pointerId;
+    this.formationPointer.lastX = event.clientX;
+    this.formationPointer.lastY = event.clientY;
+    try {
+      this.app.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic test events do not always have a capturable pointer id.
+    }
   };
 
   private readonly onAppPointerMove = (event: PointerEvent) => {
+    if (this.formationPointer.active) {
+      if (event.pointerId !== this.formationPointer.id) return;
+      event.preventDefault();
+      this.moon.rotateStory(
+        event.clientX - this.formationPointer.lastX,
+        event.clientY - this.formationPointer.lastY,
+      );
+      this.retargetMeteors();
+      this.formationPointer.lastX = event.clientX;
+      this.formationPointer.lastY = event.clientY;
+      return;
+    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerMove(event);
   };
 
   private readonly onAppPointerUp = (event: PointerEvent) => {
+    if (this.formationPointer.active) {
+      if (event.pointerId !== this.formationPointer.id) return;
+      event.preventDefault();
+      this.formationPointer.active = false;
+      this.formationPointer.id = null;
+      try {
+        this.app.releasePointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already have been released by the browser.
+      }
+      return;
+    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerUp(event.pointerId);
@@ -169,6 +231,10 @@ export class Game {
     event.preventDefault();
     this.advanceStory();
   };
+
+  private canRotateStoryMoon(): boolean {
+    return !this.observationMode && !this.ctaVisible && this.fadeState === 'idle' && this.stage !== 'character';
+  }
 
   private readonly onObserveClick = (event: MouseEvent) => {
     event.stopPropagation();
@@ -222,6 +288,7 @@ export class Game {
     this.observationResetButton.removeEventListener('click', this.onObservationResetClick);
     this.clearMeteors();
     this.clearBursts();
+    disposeMeteorResources(this.meteorResources);
     this.moon.dispose();
     this.observation.dispose();
     this.halo.geometry.dispose();
@@ -398,13 +465,18 @@ export class Game {
     } else if (stage === 'impacts') {
       this.moon.setMode('impacts');
       this.moon.setCraterCount(0);
-      this.launchMeteors();
+      this.launchMeteors('formation');
     } else if (stage === 'lava') {
       this.moon.setMode('lava');
       this.moon.setCraterCount(4);
     } else {
       this.moon.setMode('cratered');
-      this.moon.setCraterCount(STORY_CRATER_COUNT);
+      if (this.lineIndex === STORY.length - 1) {
+        this.moon.setCraterCount(STORY_CRATER_COUNT);
+      } else {
+        this.moon.setCraterCount(4);
+        this.launchMeteors('late');
+      }
       this.lavaLight.intensity = 0;
     }
   }
@@ -440,27 +512,45 @@ export class Game {
     }
   }
 
-  private launchMeteors(): void {
-    const starts = [
-      new THREE.Vector3(-4.8, 3.9, 3.2),
-      new THREE.Vector3(4.8, 4.1, 3.1),
-      new THREE.Vector3(-5.2, -2.6, 3.7),
-      new THREE.Vector3(5.3, -2.1, 3.6),
-      new THREE.Vector3(0.4, 5.3, 2.8),
-      new THREE.Vector3(-3.8, 1.0, 4.2),
-      new THREE.Vector3(3.9, 0.7, 4.4),
-      new THREE.Vector3(-1.2, -4.6, 3.2),
-      new THREE.Vector3(1.8, -4.4, 3.4),
-      new THREE.Vector3(6.0, 0.9, 3.8),
-    ];
-    const scales = [0.58, 0.48, 0.44, 0.4, 0.38, 0.34, 0.31, 0.34, 0.28, 0.26];
+  private launchMeteors(wave: MeteorWave): void {
+    const count = wave === 'formation' ? FORMATION_METEOR_COUNT : LATE_METEOR_COUNT;
+    const firstTargetIndex = wave === 'formation' ? 0 : 4;
 
-    starts.forEach((start, index) => {
-      const target = getCraterTarget(index);
-      const meteor = new Meteor(index, start, target, index * 0.16, scales[index] ?? 0.3);
+    for (let index = 0; index < count; index += 1) {
+      const targetIndex = firstTargetIndex + (wave === 'formation' ? index % STORY_CRATER_COUNT : index);
+      const band = index % 6;
+      const row = Math.floor(index / 6);
+      const distance = 5.25 + (index % 3) * 0.48 + row * 0.22;
+      const lateral = (band - 2.5) * 0.28;
+      const vertical = (row - 1) * 0.24 + (index % 2 === 0 ? -0.05 : 0.05);
+      const target = getCraterTarget(targetIndex, this.moon.group.rotation.x, this.moon.group.rotation.y);
+      const start = target
+        .clone()
+        .addScaledVector(METEOR_SHOWER_DIRECTION, -distance)
+        .addScaledVector(METEOR_SHOWER_SIDE, lateral)
+        .add(new THREE.Vector3(0, vertical, 0));
+      const delay = index * (wave === 'formation' ? 0.095 : 0.12);
+      const scale = wave === 'formation' ? 0.28 + (index % 5) * 0.035 : 0.3 + (index % 3) * 0.04;
+      const duration = wave === 'formation' ? 1.05 + (index % 4) * 0.07 : 0.96 + (index % 3) * 0.06;
+      const meteor = new Meteor(index, start, target, delay, scale, this.meteorResources, {
+        duration,
+        targetIndex,
+        revealsCrater:
+          wave === 'late' ? index < LATE_CRATER_REVEAL_COUNT : index < STORY_CRATER_COUNT,
+      });
       this.meteors.push(meteor);
       this.scene.add(meteor.group);
-    });
+    }
+  }
+
+  private retargetMeteors(): void {
+    if (this.meteors.length === 0) return;
+
+    const pitch = this.moon.group.rotation.x;
+    const yaw = this.moon.group.rotation.y;
+    for (const meteor of this.meteors) {
+      meteor.setTarget(getCraterTarget(meteor.targetIndex, pitch, yaw));
+    }
   }
 
   private updateMeteors(delta: number): void {
@@ -470,7 +560,7 @@ export class Game {
       if (!impacted) continue;
 
       const normal = meteor.target.clone().normalize();
-      this.moon.revealNextCrater();
+      if (meteor.revealsCrater) this.moon.revealNextCrater();
       this.cameraShake = 1;
       const burst = new ImpactBurst(meteor.target.clone().addScaledVector(normal, 0.02), normal, meteor.index);
       this.bursts.push(burst);
@@ -652,8 +742,14 @@ export class Game {
           y: this.moon.group.position.y,
           z: this.moon.group.position.z,
         },
+        rotation: {
+          yaw: this.moon.group.rotation.y,
+          pitch: this.moon.group.rotation.x,
+        },
         mode: this.moon.getMode(),
         craterCount: this.moon.getCraterCount(),
+        lavaFlowProgress: this.moon.getLavaFlowProgress(),
+        lavaCoolingProgress: this.moon.getLavaCoolingProgress(),
       },
       observation: {
         active: this.observationMode,
@@ -665,6 +761,8 @@ export class Game {
         geometries: info.memory.geometries,
         textures: info.memory.textures,
       },
+      meteorCount: this.meteors.length,
+      burstCount: this.bursts.length,
       canvas: {
         clientWidth: this.canvas.clientWidth,
         clientHeight: this.canvas.clientHeight,

@@ -15,7 +15,7 @@ export class Dialogue {
     this.typing = true;
     this.textElement.textContent = '';
     this.progressElement.textContent = `${String(index + 1).padStart(2, '0')} / ${String(total).padStart(2, '0')}`;
-    this.hintElement.textContent = '화면을 탭하면 문장이 완성돼';
+    this.hintElement.textContent = '대화창을 탭하면 문장이 완성돼요';
   }
 
   update(delta: number): void {
@@ -38,7 +38,7 @@ export class Dialogue {
     this.characterCarry = this.fullText.length;
     this.textElement.textContent = this.fullText;
     this.typing = false;
-    this.hintElement.textContent = '화면을 탭하면 다음 이야기';
+    this.hintElement.textContent = '대화창을 탭하면 다음 이야기';
   }
 
   isTyping(): boolean {

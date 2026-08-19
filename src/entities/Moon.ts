@@ -5,6 +5,13 @@ export type MoonMode = 'character' | 'smooth' | 'impacts' | 'lava' | 'cratered';
 
 const BODY_RADIUS = MOON_VIEW.storyRadius;
 const FRONT = new THREE.Vector3(0, 0, 1);
+const LAVA_FLOW_DURATION = 1.35;
+const LAVA_COOLING_DURATION = 1.1;
+const HOT_LAVA_COLOR = new THREE.Color('#ff7a35');
+const COOL_LAVA_COLOR = new THREE.Color('#34251f');
+const HOT_LAVA_EMISSIVE = new THREE.Color('#e64920');
+const COOL_LAVA_EMISSIVE = new THREE.Color('#120f0e');
+const MOON_SURFACE_BASE_COLOR = '#b6b8bb';
 
 const CRATER_NORMALS = [
   // A few medium landmarks, followed by many smaller impacts. The uneven
@@ -33,11 +40,11 @@ type CraterSlot = {
   lava: THREE.Mesh;
 };
 
-export function getCraterTarget(index: number): THREE.Vector3 {
+export function getCraterTarget(index: number, pitch: number = MOON_VIEW.pitch, yaw: number = MOON_VIEW.yaw): THREE.Vector3 {
   return CRATER_NORMALS[index % CRATER_NORMALS.length]
     .clone()
     .multiplyScalar(BODY_RADIUS + 0.02)
-    .applyEuler(new THREE.Euler(MOON_VIEW.pitch, MOON_VIEW.yaw, 0));
+    .applyEuler(new THREE.Euler(pitch, yaw, 0));
 }
 
 export class Moon {
@@ -58,9 +65,9 @@ export class Moon {
   private readonly craterSlots: CraterSlot[] = [];
   private readonly mariaPatches: THREE.Mesh[] = [];
   private readonly craterBasinMaterial = new THREE.MeshStandardMaterial({
-    roughness: 1,
+    color: MOON_SURFACE_BASE_COLOR,
+    roughness: 0.94,
     metalness: 0,
-    vertexColors: true,
   });
   private readonly mariaMaterial: THREE.MeshStandardMaterial;
   private readonly lavaMaterial = new THREE.MeshStandardMaterial({
@@ -94,7 +101,11 @@ export class Moon {
   private mode: MoonMode = 'character';
   private craterCount = 0;
   private impactFlash = 0;
-  private lavaProgress = 0;
+  private lavaElapsed = 0;
+  private lavaFlowProgress = 0;
+  private lavaCoolingProgress = 0;
+  private storyYaw: number = MOON_VIEW.yaw;
+  private storyPitch: number = MOON_VIEW.pitch;
 
   constructor() {
     this.surfaceTexture = this.createSurfaceTexture();
@@ -126,22 +137,33 @@ export class Moon {
   update(delta: number, elapsed: number, animate: boolean): void {
     const time = animate ? elapsed : 0;
     const isCharacter = this.mode === 'character';
-    this.group.rotation.y = isCharacter ? Math.sin(time * 0.48) * 0.12 : MOON_VIEW.yaw;
-    this.group.rotation.x = isCharacter ? Math.sin(time * 0.6) * 0.025 : MOON_VIEW.pitch;
+    this.group.rotation.y = isCharacter ? Math.sin(time * 0.48) * 0.12 : this.storyYaw;
+    this.group.rotation.x = isCharacter ? Math.sin(time * 0.6) * 0.025 : this.storyPitch;
     this.group.position.y = isCharacter ? Math.sin(time * 2.1) * 0.11 : 0;
 
     this.impactFlash = Math.max(0, this.impactFlash - delta * 4.4);
-    if (this.mode === 'lava') this.lavaProgress = Math.min(1, this.lavaProgress + delta * 0.42);
-    if (this.mode === 'cratered') this.lavaProgress = 1;
+    if (this.mode === 'lava') {
+      this.lavaElapsed = Math.min(this.lavaElapsed + delta, LAVA_FLOW_DURATION + LAVA_COOLING_DURATION);
+      this.lavaFlowProgress = THREE.MathUtils.clamp(this.lavaElapsed / LAVA_FLOW_DURATION, 0, 1);
+      this.lavaCoolingProgress = THREE.MathUtils.clamp(
+        (this.lavaElapsed - LAVA_FLOW_DURATION) / LAVA_COOLING_DURATION,
+        0,
+        1,
+      );
+    } else if (this.mode === 'cratered') {
+      this.lavaElapsed = LAVA_FLOW_DURATION + LAVA_COOLING_DURATION;
+      this.lavaFlowProgress = 1;
+      this.lavaCoolingProgress = 1;
+    }
 
     this.bodyMaterial.emissive.set(this.impactFlash > 0 ? '#e85a2b' : '#000000');
     this.bodyMaterial.emissiveIntensity = this.impactFlash * 0.45;
-    this.mariaMaterial.opacity = this.mode === 'lava' ? 0.12 + this.lavaProgress * 0.72 : 0.86;
-    this.lavaMaterial.emissiveIntensity = this.mode === 'lava' ? 1.65 + Math.sin(time * 6.5) * 0.18 : 0;
+    this.updateLavaMaterials(time);
 
     for (const slot of this.craterSlots) {
       if (slot.lava.visible) {
-        const fill = 0.18 + this.lavaProgress * 0.82;
+        const flow = THREE.MathUtils.smoothstep(this.lavaFlowProgress, 0, 1);
+        const fill = 0.16 + flow * 0.84;
         slot.lava.scale.set(fill, fill * 0.84, 1);
       }
     }
@@ -165,8 +187,11 @@ export class Moon {
       this.bodyMaterial.bumpScale = 0;
       this.bodyMaterial.roughness = 0.7;
       this.setCraterCount(0);
-      this.lavaProgress = 0;
+      this.lavaElapsed = 0;
+      this.lavaFlowProgress = 0;
+      this.lavaCoolingProgress = 0;
       this.setLavaVisibility(false);
+      this.updateLavaMaterials(0);
       this.bodyMaterial.needsUpdate = true;
       return;
     }
@@ -177,8 +202,11 @@ export class Moon {
     this.bodyMaterial.bumpScale = 0.022;
     this.bodyMaterial.roughness = 0.94;
     this.bodyMaterial.needsUpdate = true;
-    this.lavaProgress = mode === 'cratered' ? 1 : 0;
+    this.lavaElapsed = mode === 'cratered' ? LAVA_FLOW_DURATION + LAVA_COOLING_DURATION : 0;
+    this.lavaFlowProgress = mode === 'cratered' ? 1 : 0;
+    this.lavaCoolingProgress = mode === 'cratered' ? 1 : 0;
     this.setLavaVisibility(mode === 'lava');
+    this.updateLavaMaterials(0);
 
     if (mode === 'smooth') this.setCraterCount(0);
     if (mode === 'impacts') this.setCraterCount(Math.min(this.craterCount, 1));
@@ -205,8 +233,21 @@ export class Moon {
     return this.mode;
   }
 
+  rotateStory(deltaX: number, deltaY: number): void {
+    this.storyYaw += deltaX * 0.008;
+    this.storyPitch = THREE.MathUtils.clamp(this.storyPitch + deltaY * 0.006, -0.78, 0.78);
+  }
+
   getCraterCount(): number {
     return this.craterCount;
+  }
+
+  getLavaFlowProgress(): number {
+    return this.lavaFlowProgress;
+  }
+
+  getLavaCoolingProgress(): number {
+    return this.lavaCoolingProgress;
   }
 
   dispose(): void {
@@ -423,27 +464,16 @@ export class Moon {
     const segments = 18;
     const rings = 3;
     const positions: number[] = [0, 0, -depth];
-    const colors: number[] = [];
     const indices: number[] = [];
-    const basinColors = [
-      new THREE.Color('#625e56'),
-      new THREE.Color('#756f66'),
-      new THREE.Color('#8e887c'),
-      new THREE.Color('#a59f93'),
-    ];
-    const centerColor = basinColors[0];
-    colors.push(centerColor.r, centerColor.g, centerColor.b);
 
     for (let ring = 1; ring <= rings; ring += 1) {
       const t = ring / rings;
-      const ringColor = basinColors[ring];
       for (let segment = 0; segment < segments; segment += 1) {
         const angle = (segment / segments) * Math.PI * 2;
         const wobble = 1 + Math.sin(angle * (2 + (seed % 3)) + seed) * 0.075 + Math.sin(angle * 5 - seed) * 0.035;
         const ringRadius = radius * t * wobble;
         const z = -depth * Math.pow(1 - t, 1.45);
         positions.push(Math.cos(angle) * ringRadius, Math.sin(angle) * ringRadius, z);
-        colors.push(ringColor.r, ringColor.g, ringColor.b);
       }
     }
 
@@ -469,7 +499,6 @@ export class Moon {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     return geometry;
@@ -522,5 +551,18 @@ export class Moon {
     this.craterSlots.forEach((slot, index) => {
       slot.lava.visible = visible && index < this.craterCount;
     });
+  }
+
+  private updateLavaMaterials(time: number): void {
+    const cooling = THREE.MathUtils.smoothstep(this.lavaCoolingProgress, 0, 1);
+    this.lavaMaterial.color.lerpColors(HOT_LAVA_COLOR, COOL_LAVA_COLOR, cooling);
+    this.lavaMaterial.emissive.lerpColors(HOT_LAVA_EMISSIVE, COOL_LAVA_EMISSIVE, cooling);
+    this.lavaMaterial.emissiveIntensity =
+      this.mode === 'lava'
+        ? THREE.MathUtils.lerp(1.8, 0.08, cooling) + Math.sin(time * 6.5) * 0.18 * (1 - cooling)
+        : 0;
+    // The dark maria are the cooled result of the flow. They fade in only
+    // after the orange lava has spread, instead of existing underneath it.
+    this.mariaMaterial.opacity = this.mode === 'lava' ? cooling * 0.86 : this.mode === 'cratered' ? 0.86 : 0;
   }
 }
