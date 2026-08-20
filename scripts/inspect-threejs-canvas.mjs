@@ -116,10 +116,10 @@ function computePixelMetrics(png) {
 // the full Chromium build in new headless mode against the real GPU.
 async function launchBrowser() {
   try {
-    return await chromium.launch({ channel: 'chromium' });
+    return await chromium.launch({ channel: 'chrome' });
   } catch {
     console.error(
-      'warning: channel:"chromium" is unavailable, falling back to the bundled headless shell.\n' +
+      'warning: channel:"chrome" is unavailable, falling back to the bundled headless shell.\n' +
         '  Rendering will be software (SwiftShader) and any FPS/frame-time evidence is invalid.\n' +
         '  Fix with: npx playwright install chromium',
     );

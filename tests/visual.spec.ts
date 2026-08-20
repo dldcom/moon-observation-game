@@ -217,11 +217,87 @@ test('narrative slice renders and progresses through the 3D moon formation story
   await page.locator('#main-moon-button').click();
   await expect(page.locator('#main-menu-choices')).toBeVisible();
   await page.locator('#game-choice').click();
-  await expect(page.locator('#game-placeholder')).toBeVisible();
-  await page.locator('#game-placeholder-back').click();
-  await expect(page.locator('#game-placeholder')).toBeHidden();
+  await expect(page.locator('#moon-game-ui')).toBeVisible();
+  await expect(page.locator('#moon-game-status')).toContainText('운석');
+  await page.locator('#moon-game-back').click();
+  await expect(page.locator('#moon-game-ui')).toBeHidden();
   await expect(page.locator('#main-menu-ui')).toBeVisible();
 
+  expect(consoleErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('moon sculpting loop launches a meteor, creates a crater, and erupts lava', async ({ page }, testInfo) => {
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto('/');
+  await page.waitForFunction(() => (window.__THREE_GAME_DIAGNOSTICS__?.frame ?? 0) > 8);
+  await page.evaluate(() => window.__THREE_GAME_TEST_HOOKS__?.setState('game'));
+  await expect(page.locator('#moon-game-ui')).toBeVisible();
+  await page.waitForTimeout(650);
+
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
+  if (!viewport) return;
+  const portrait = viewport.height > viewport.width;
+  const start = portrait
+    ? { x: viewport.width * 0.5, y: viewport.height * 0.805 }
+    : { x: viewport.width * 0.5, y: viewport.height * 0.852 };
+  const end = portrait
+    ? { x: viewport.width * 0.5, y: viewport.height * 0.875 }
+    : { x: viewport.width * 0.5, y: viewport.height * 0.95 };
+
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.state))
+    .toBe('aiming');
+  await page.mouse.up();
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.craterCount ?? 0),
+      { timeout: 5_000 },
+    )
+    .toBeGreaterThan(0);
+  const impactNormal = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.lastImpactNormal);
+  expect(impactNormal?.z).toBeGreaterThan(0.55);
+  expect(impactNormal?.y).toBeGreaterThan(-0.8);
+  await expect(page.locator('#moon-game-erupt')).toBeVisible();
+  await expect(page.locator('#moon-game-erupt')).toContainText('용암 분출하기');
+  await page.locator('#moon-game-erupt').click();
+  await expect(page.locator('#moon-game-erupt')).toContainText('멈추기');
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.lavaProgress ?? 0))
+    .toBeGreaterThan(0);
+  await page.waitForTimeout(700);
+  await page.locator('#moon-game-erupt').click();
+  const stoppedProgress = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.lavaProgress ?? 0);
+  await page.waitForTimeout(350);
+  const settledProgress = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.lavaProgress ?? 0);
+  expect(settledProgress).toBeCloseTo(stoppedProgress, 3);
+  await expect(page.locator('#moon-game-erupt')).toBeHidden();
+
+  await page.evaluate(() => window.__THREE_GAME_TEST_HOOKS__?.setState('game-mare-impact'));
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.mareCount ?? 0))
+    .toBe(1);
+  await expect
+    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.craterCount ?? 0))
+    .toBe(2);
+  expect(await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.sculpting.selectedCraterState)).toBe('fresh');
+
+  const sample = await sampleCanvas(page);
+  expect(sample, JSON.stringify(sample)).toMatchObject({ ok: true });
+  await testInfo.attach(testInfo.project.name + '-moon-sculpting', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
   expect(consoleErrors).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

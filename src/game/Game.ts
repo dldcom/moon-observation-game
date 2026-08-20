@@ -16,6 +16,7 @@ import {
   type ObservationFeatureId,
 } from '../scenes/ObservationScene';
 import { MOON_VIEW, STORY_CAMERA_DISTANCE } from '../scenes/moonComposition';
+import { MoonSculptingScene, type MeteorSize } from '../scenes/MoonSculptingScene';
 import { Dialogue } from '../systems/Dialogue';
 
 type StoryStage = Exclude<MoonMode, 'smooth'> | 'smooth';
@@ -104,6 +105,7 @@ export class Game {
   private readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 80);
   private readonly moon = new Moon();
   private readonly observation: ObservationScene;
+  private readonly sculpting: MoonSculptingScene;
   private readonly dialogue = new Dialogue();
   private readonly meteors: Meteor[] = [];
   private readonly bursts: ImpactBurst[] = [];
@@ -133,8 +135,13 @@ export class Game {
   private readonly formationChoiceButton = this.getElement<HTMLButtonElement>('#formation-choice');
   private readonly observationChoiceButton = this.getElement<HTMLButtonElement>('#observation-choice');
   private readonly gameChoiceButton = this.getElement<HTMLButtonElement>('#game-choice');
-  private readonly gamePlaceholder = this.getElement<HTMLElement>('#game-placeholder');
-  private readonly gamePlaceholderBackButton = this.getElement<HTMLButtonElement>('#game-placeholder-back');
+  private readonly moonGameUi = this.getElement<HTMLElement>('#moon-game-ui');
+  private readonly moonGameBackButton = this.getElement<HTMLButtonElement>('#moon-game-back');
+  private readonly moonGameResetButton = this.getElement<HTMLButtonElement>('#moon-game-reset');
+  private readonly moonGameStatus = this.getElement<HTMLElement>('#moon-game-status');
+  private readonly moonGameCraterCount = this.getElement<HTMLElement>('#moon-game-crater-count');
+  private readonly moonGameSizeControls = this.getElement<HTMLElement>('#moon-game-size-controls');
+  private readonly moonGameEruptButton = this.getElement<HTMLButtonElement>('#moon-game-erupt');
   private readonly fadeOverlay = this.getElement<HTMLElement>('#fade-overlay');
   private readonly halo: THREE.Mesh;
   private readonly stars: THREE.Points;
@@ -164,9 +171,15 @@ export class Game {
   private mainMenuActive = true;
   private mainMenuDialogueActive = false;
   private mainMenuChoicesVisible = false;
-  private gamePlaceholderActive = false;
+  private gameMode = false;
   private readonly onAppPointerDown = (event: PointerEvent) => {
     const target = event.target;
+    if (this.gameMode) {
+      if (target instanceof Element && target.closest('#moon-game-ui button')) return;
+      event.preventDefault();
+      this.sculpting.handlePointerDown(event);
+      return;
+    }
     if (this.observationMode) {
       if (
         target instanceof Element &&
@@ -178,7 +191,6 @@ export class Game {
       this.observation.handlePointerDown(event);
       return;
     }
-    if (this.gamePlaceholderActive) return;
     if (this.mainMenuActive) {
       const targetElement = target instanceof Element ? target : null;
       if (targetElement?.closest('#main-menu-choices, #main-moon-button')) return;
@@ -195,18 +207,28 @@ export class Game {
       }
       return;
     }
-    if (target instanceof Element && target.closest('#observe-button, #game-placeholder-back')) return;
+    if (target instanceof Element && target.closest('#observe-button')) return;
     event.preventDefault();
     this.advanceStory();
   };
 
   private readonly onAppPointerMove = (event: PointerEvent) => {
+    if (this.gameMode) {
+      event.preventDefault();
+      this.sculpting.handlePointerMove(event);
+      return;
+    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerMove(event);
   };
 
   private readonly onAppPointerUp = (event: PointerEvent) => {
+    if (this.gameMode) {
+      event.preventDefault();
+      this.sculpting.handlePointerUp(event);
+      return;
+    }
     if (!this.observationMode) return;
     event.preventDefault();
     this.observation.handlePointerUp(event.pointerId);
@@ -219,18 +241,18 @@ export class Game {
   };
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
+    if (this.gameMode) {
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        this.enterMainMenu();
+      }
+      return;
+    }
     if (this.observationMode) {
       if (event.code === 'Escape') {
         event.preventDefault();
         if (!this.observationFeatureModal.hidden) this.closeObservationFeature();
         else this.exitObservationMode();
-      }
-      return;
-    }
-    if (this.gamePlaceholderActive) {
-      if (event.code === 'Escape') {
-        event.preventDefault();
-        this.enterMainMenu();
       }
       return;
     }
@@ -271,12 +293,35 @@ export class Game {
 
   private readonly onGameChoiceClick = (event: MouseEvent) => {
     event.stopPropagation();
-    this.showGamePlaceholder();
+    this.enterGameMode();
   };
 
-  private readonly onGamePlaceholderBackClick = (event: MouseEvent) => {
+  private readonly onMoonGameBackClick = (event: MouseEvent) => {
     event.stopPropagation();
     this.enterMainMenu();
+  };
+
+  private readonly onMoonGameResetClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.sculpting.reset();
+    this.updateMoonGameUi();
+  };
+
+  private readonly onMoonGameSizeClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    const button = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('[data-meteor-size]')
+      : null;
+    const size = button?.dataset.meteorSize;
+    if (size !== 'small' && size !== 'medium' && size !== 'large') return;
+    this.sculpting.setMeteorSize(size satisfies MeteorSize);
+    this.updateMoonGameUi();
+  };
+
+  private readonly onMoonGameEruptClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    this.sculpting.eruptSelected();
+    this.updateMoonGameUi();
   };
 
   private readonly onObservationBackClick = (event: MouseEvent) => {
@@ -315,6 +360,7 @@ export class Game {
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = createRenderer(canvas);
     this.observation = new ObservationScene(this.renderer);
+    this.sculpting = new MoonSculptingScene(this.camera, canvas);
     this.renderer.setClearColor('#081321', 1);
     this.renderer.toneMappingExposure = 1.08;
 
@@ -328,7 +374,8 @@ export class Game {
     this.installInput();
     this.installTestHooks();
     this.enterMainMenu();
-    resizeRenderer(this.renderer, this.camera, 1.5);
+    const gameDprCap = this.gameMode && this.canvas.clientWidth <= 1024 ? 1.25 : 1.5;
+    resizeRenderer(this.renderer, this.camera, gameDprCap);
     this.publishDiagnostics();
   }
 
@@ -349,7 +396,10 @@ export class Game {
     this.formationChoiceButton.removeEventListener('click', this.onFormationChoiceClick);
     this.observationChoiceButton.removeEventListener('click', this.onObservationChoiceClick);
     this.gameChoiceButton.removeEventListener('click', this.onGameChoiceClick);
-    this.gamePlaceholderBackButton.removeEventListener('click', this.onGamePlaceholderBackClick);
+    this.moonGameBackButton.removeEventListener('click', this.onMoonGameBackClick);
+    this.moonGameResetButton.removeEventListener('click', this.onMoonGameResetClick);
+    this.moonGameSizeControls.removeEventListener('click', this.onMoonGameSizeClick);
+    this.moonGameEruptButton.removeEventListener('click', this.onMoonGameEruptClick);
     this.observationBackButton.removeEventListener('click', this.onObservationBackClick);
     this.observationResetButton.removeEventListener('click', this.onObservationResetClick);
     this.observationHotspots.removeEventListener('pointerdown', this.onObservationHotspotPointerDown);
@@ -361,6 +411,7 @@ export class Game {
     disposeMeteorResources(this.meteorResources);
     this.moon.dispose();
     this.observation.dispose();
+    this.sculpting.dispose();
     this.halo.geometry.dispose();
     (this.halo.material as THREE.Material).dispose();
     this.stars.geometry.dispose();
@@ -378,10 +429,14 @@ export class Game {
     }
 
     this.elapsed += delta;
-    resizeRenderer(this.renderer, this.camera, 1.5);
+    const activeDprCap = this.gameMode && this.canvas.clientWidth <= 1024 ? 1.25 : 1.5;
+    resizeRenderer(this.renderer, this.camera, activeDprCap);
     this.dialogue.update(delta);
     this.updateFade(delta);
-    if (this.observationMode) {
+    if (this.gameMode) {
+      this.sculpting.update(delta, this.reducedMotion);
+      this.updateMoonGameUi();
+    } else if (this.observationMode) {
       this.observation.update(delta, this.reducedMotion);
     } else {
       this.moon.update(delta, this.elapsed, !this.reducedMotion);
@@ -396,7 +451,7 @@ export class Game {
       }
     }
     if (this.observationMode) this.updateObservationFeatures();
-    this.lavaLight.intensity = !this.observationMode && this.stage === 'lava' ? 1.05 + Math.sin(this.elapsed * 7) * 0.12 : 0;
+    this.lavaLight.intensity = !this.observationMode && !this.gameMode && this.stage === 'lava' ? 1.05 + Math.sin(this.elapsed * 7) * 0.12 : 0;
     this.observationFill.intensity = this.observationMode ? 1.25 : 0;
     this.stars.rotation.y = this.reducedMotion ? 0 : this.elapsed * 0.004;
     this.halo.rotation.z = this.reducedMotion ? 0 : this.elapsed * 0.025;
@@ -426,7 +481,15 @@ export class Game {
     rim.position.set(4.5, 1.5, -2.8);
     this.scene.add(rim);
 
-    this.scene.add(this.stars, this.halo, this.moon.group, this.observation.group, this.lavaLight, this.observationFill);
+    this.scene.add(
+      this.stars,
+      this.halo,
+      this.moon.group,
+      this.observation.group,
+      this.sculpting.group,
+      this.lavaLight,
+      this.observationFill,
+    );
   }
 
   private createStarfield(): THREE.Points {
@@ -491,7 +554,10 @@ export class Game {
     this.formationChoiceButton.addEventListener('click', this.onFormationChoiceClick);
     this.observationChoiceButton.addEventListener('click', this.onObservationChoiceClick);
     this.gameChoiceButton.addEventListener('click', this.onGameChoiceClick);
-    this.gamePlaceholderBackButton.addEventListener('click', this.onGamePlaceholderBackClick);
+    this.moonGameBackButton.addEventListener('click', this.onMoonGameBackClick);
+    this.moonGameResetButton.addEventListener('click', this.onMoonGameResetClick);
+    this.moonGameSizeControls.addEventListener('click', this.onMoonGameSizeClick);
+    this.moonGameEruptButton.addEventListener('click', this.onMoonGameEruptClick);
     this.observationBackButton.addEventListener('click', this.onObservationBackClick);
     this.observationResetButton.addEventListener('click', this.onObservationResetClick);
     this.observationHotspots.addEventListener('pointerdown', this.onObservationHotspotPointerDown);
@@ -677,6 +743,11 @@ export class Game {
   }
 
   private updateCamera(delta: number): void {
+    if (this.gameMode) {
+      this.sculpting.applyCamera(delta, this.reducedMotion);
+      this.cameraShake = 0;
+      return;
+    }
     if (this.observationMode) {
       this.cameraGoal.set(0, 0, this.observation.getCameraDistance(this.camera.aspect));
       const cameraSmoothing = 1 - Math.exp(-delta * 4.6);
@@ -713,7 +784,7 @@ export class Game {
     this.mainMenuActive = true;
     this.mainMenuDialogueActive = false;
     this.mainMenuChoicesVisible = false;
-    this.gamePlaceholderActive = false;
+    this.gameMode = false;
     this.observationMode = false;
     this.lineIndex = 0;
     this.fadeState = 'idle';
@@ -725,7 +796,7 @@ export class Game {
     this.mainMenuChoices.hidden = true;
     this.mainMenuMoonButton.hidden = false;
     this.mainMenuHint.textContent = '달을 클릭해 이야기를 시작해 보세요.';
-    this.gamePlaceholder.hidden = true;
+    this.moonGameUi.hidden = true;
     this.eraLabel.hidden = true;
     this.dialoguePanel.hidden = true;
     this.cta.hidden = true;
@@ -733,6 +804,7 @@ export class Game {
     this.ctaNote.hidden = true;
     this.observationUi.hidden = true;
     this.observation.group.visible = false;
+    this.sculpting.setActive(false);
     this.closeObservationFeature();
 
     this.clearMeteors();
@@ -770,15 +842,16 @@ export class Game {
     this.mainMenuActive = false;
     this.mainMenuDialogueActive = false;
     this.mainMenuChoicesVisible = false;
-    this.gamePlaceholderActive = false;
+    this.gameMode = false;
     this.mainMenuUi.hidden = true;
     this.mainMenuChoices.hidden = true;
     this.mainMenuMoonButton.hidden = true;
-    this.gamePlaceholder.hidden = true;
+    this.moonGameUi.hidden = true;
     this.eraLabel.hidden = false;
     this.dialoguePanel.hidden = false;
     this.observationUi.hidden = true;
     this.observation.group.visible = false;
+    this.sculpting.setActive(false);
     this.moon.group.visible = true;
     this.cta.hidden = true;
     this.ctaVisible = false;
@@ -792,13 +865,13 @@ export class Game {
     this.applyLine(0, false);
   }
 
-  private showGamePlaceholder(): void {
+  private enterGameMode(): void {
     if (!this.mainMenuActive) return;
 
     this.mainMenuActive = false;
     this.mainMenuDialogueActive = false;
     this.mainMenuChoicesVisible = false;
-    this.gamePlaceholderActive = true;
+    this.gameMode = true;
     this.mainMenuUi.hidden = true;
     this.mainMenuChoices.hidden = true;
     this.mainMenuMoonButton.hidden = true;
@@ -808,13 +881,44 @@ export class Game {
     this.ctaVisible = false;
     this.ctaNote.hidden = true;
     this.observationUi.hidden = true;
+    this.moonGameUi.hidden = false;
     this.observation.group.visible = false;
     this.clearMeteors();
     this.clearBursts();
-    this.moon.group.visible = true;
-    this.setStage('character');
-    this.gamePlaceholder.hidden = false;
-    this.gamePlaceholderBackButton.focus();
+    this.halo.visible = false;
+    this.moon.group.visible = false;
+    this.sculpting.setActive(true);
+    this.updateMoonGameUi();
+    this.moonGameBackButton.focus();
+  }
+
+  private updateMoonGameUi(): void {
+    const snapshot = this.sculpting.getSnapshot();
+    const statusByState: Record<typeof snapshot.state, string> = {
+      ready: '운석을 뒤로 당겨 달을 향해 놓아 보세요.',
+      aiming: '점선 궤도를 확인하고 손을 놓아 발사하세요.',
+      flying: '운석이 날아가고 있어요!',
+      reloading: '다음 운석을 준비하고 있어요…',
+    };
+    const fillPercent = Math.round(snapshot.lavaProgress * 100);
+    this.moonGameStatus.textContent = snapshot.selectedCraterState === 'erupting'
+      ? `용암이 천천히 퍼지고 있어요 · ${fillPercent}%에서 멈출 수 있어요.`
+      : snapshot.selectedCraterState === 'cooling'
+        ? `용암이 ${fillPercent}%만큼 채워진 채로 식고 있어요.`
+        : snapshot.selectedCraterState === 'mare'
+          ? `용암이 ${fillPercent}%만큼 굳어 새로운 달의 바다가 되었어요.`
+          : snapshot.canErupt
+            ? '선택한 충돌 구덩이에 용암을 분출할 수 있어요.'
+            : statusByState[snapshot.state];
+    this.moonGameCraterCount.textContent = `충돌 구덩이 ${snapshot.craterCount} · 달의 바다 ${snapshot.mareCount}`;
+    this.moonGameEruptButton.hidden = snapshot.lavaAction === null;
+    this.moonGameEruptButton.disabled = snapshot.lavaAction === null;
+    this.moonGameEruptButton.dataset.mode = snapshot.lavaAction ?? '';
+    this.moonGameEruptButton.lastChild!.textContent = snapshot.lavaAction === 'stop' ? ' 멈추기' : ' 용암 분출하기';
+    for (const button of this.moonGameSizeControls.querySelectorAll<HTMLButtonElement>('[data-meteor-size]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.meteorSize === snapshot.meteorSize));
+      button.disabled = snapshot.state === 'flying' || snapshot.state === 'aiming';
+    }
   }
 
   private updateMainMenuMoonButton(): void {
@@ -842,11 +946,11 @@ export class Game {
     this.mainMenuActive = false;
     this.mainMenuDialogueActive = false;
     this.mainMenuChoicesVisible = false;
-    this.gamePlaceholderActive = false;
+    this.gameMode = false;
     this.mainMenuUi.hidden = true;
     this.mainMenuChoices.hidden = true;
     this.mainMenuMoonButton.hidden = true;
-    this.gamePlaceholder.hidden = true;
+    this.moonGameUi.hidden = true;
     this.observationMode = true;
     this.ctaVisible = false;
     this.cta.hidden = true;
@@ -861,6 +965,7 @@ export class Game {
     this.clearBursts();
     this.halo.visible = false;
     this.moon.group.visible = false;
+    this.sculpting.setActive(false);
     this.observation.reset();
     this.observation.group.visible = true;
 
@@ -931,6 +1036,39 @@ export class Game {
         void value;
       },
       setState: (name: string) => {
+        if (name === 'game' || name === 'game-active') {
+          if (!this.mainMenuActive) this.enterMainMenu();
+          this.enterGameMode();
+          return;
+        }
+        if (name === 'game-cratered' || name === 'game-lava') {
+          if (!this.mainMenuActive) this.enterMainMenu();
+          this.enterGameMode();
+          this.sculpting.createDemoCrater(name === 'game-lava');
+          this.updateMoonGameUi();
+          return;
+        }
+        if (name === 'game-stress') {
+          if (!this.mainMenuActive) this.enterMainMenu();
+          this.enterGameMode();
+          this.sculpting.createStressCraters();
+          this.updateMoonGameUi();
+          return;
+        }
+        if (name === 'game-mare-impact') {
+          if (!this.mainMenuActive) this.enterMainMenu();
+          this.enterGameMode();
+          this.sculpting.createDemoMareImpact();
+          this.updateMoonGameUi();
+          return;
+        }
+        if (name === 'game-mare-patches') {
+          if (!this.mainMenuActive) this.enterMainMenu();
+          this.enterGameMode();
+          this.sculpting.createDemoMarePatches();
+          this.updateMoonGameUi();
+          return;
+        }
         if (name === 'observation') {
           this.jumpToLine(STORY.length - 1);
           this.dialogue.finish();
@@ -939,7 +1077,8 @@ export class Game {
           return;
         }
         if (this.observationMode) this.exitObservationMode();
-        if (this.mainMenuActive || this.gamePlaceholderActive) this.startFormationStory();
+        if (this.gameMode) this.enterMainMenu();
+        if (this.mainMenuActive) this.startFormationStory();
         const index = STAGE_LINE_INDEX[name];
         if (index === undefined) {
           console.warn(`Unknown test state: ${name}`);
@@ -960,7 +1099,8 @@ export class Game {
   }
 
   private jumpToLine(index: number): void {
-    if (this.mainMenuActive || this.gamePlaceholderActive) this.startFormationStory();
+    if (this.gameMode) this.enterMainMenu();
+    if (this.mainMenuActive) this.startFormationStory();
     this.fadeState = 'idle';
     this.fadeProgress = 0;
     this.pendingStage = null;
@@ -981,9 +1121,10 @@ export class Game {
       score: this.lineIndex,
       targetScore: STORY.length - 1,
       complete: this.ctaVisible || this.observationMode,
-      stage: this.observationMode ? 'observation' : this.mainMenuActive ? 'menu' : this.stage,
+      stage: this.gameMode ? 'game' : this.observationMode ? 'observation' : this.mainMenuActive ? 'menu' : this.stage,
       mainMenu: this.mainMenuActive,
-      gamePlaceholder: this.gamePlaceholderActive,
+      gamePlaceholder: false,
+      sculpting: this.sculpting.getSnapshot(),
       lineIndex: this.lineIndex,
       typing: this.dialogue.isTyping(),
       player: {
@@ -1030,7 +1171,7 @@ export class Game {
         clientHeight: this.canvas.clientHeight,
         width: this.canvas.width,
         height: this.canvas.height,
-        dpr: Math.min(window.devicePixelRatio || 1, 1.5),
+        dpr: this.canvas.clientWidth > 0 ? this.canvas.width / this.canvas.clientWidth : 1,
       },
     };
   }

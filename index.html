@@ -64,11 +64,47 @@
         <p id="cta-note" role="status" hidden></p>
       </section>
 
-      <section id="game-placeholder" aria-live="polite" hidden>
-        <span class="cta-kicker">세 번째 이야기</span>
-        <h1>게임은 곧 만나요!</h1>
-        <p>달과 함께하는 게임을 준비하고 있어요.</p>
-        <button id="game-placeholder-back" type="button">메인으로 돌아가기</button>
+      <section id="moon-game-ui" aria-live="polite" hidden>
+        <div class="moon-game-toolbar">
+          <button id="moon-game-back" class="moon-game-control" type="button">
+            <span aria-hidden="true">←</span> 메인으로
+          </button>
+          <div class="moon-game-title">
+            <span>LUNAR LAB / 01</span>
+            <strong>나만의 달 만들기</strong>
+          </div>
+          <button id="moon-game-reset" class="moon-game-control" type="button">처음부터</button>
+        </div>
+
+        <div class="moon-game-guide" aria-hidden="true">
+          <span class="moon-game-guide-number">1</span>
+          <p><strong>운석을 당기고</strong><br />놓아서 달에 충돌시켜요.</p>
+        </div>
+
+        <div id="moon-game-size-controls" class="moon-game-size-controls" aria-label="운석 크기 선택">
+          <span class="moon-game-size-label">운석 크기</span>
+          <button type="button" data-meteor-size="small" aria-pressed="false">
+            <span class="meteor-size-dot meteor-size-dot--small" aria-hidden="true"></span>작게
+          </button>
+          <button type="button" data-meteor-size="medium" aria-pressed="true">
+            <span class="meteor-size-dot meteor-size-dot--medium" aria-hidden="true"></span>보통
+          </button>
+          <button type="button" data-meteor-size="large" aria-pressed="false">
+            <span class="meteor-size-dot meteor-size-dot--large" aria-hidden="true"></span>크게
+          </button>
+        </div>
+
+        <div class="moon-game-action">
+          <button id="moon-game-erupt" type="button" hidden>
+            <span class="lava-action-icon" aria-hidden="true"></span>
+            용암 분출하기
+          </button>
+        </div>
+
+        <div class="moon-game-readout">
+          <p id="moon-game-status">운석을 뒤로 당겨 달을 향해 놓아 보세요.</p>
+          <span id="moon-game-crater-count">충돌 구덩이 0 · 달의 바다 0</span>
+        </div>
       </section>
 
       <section id="observation-ui" aria-live="polite" hidden>

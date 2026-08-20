@@ -9,6 +9,26 @@ interface ThreeGameDiagnostics {
   stage: string;
   mainMenu: boolean;
   gamePlaceholder: boolean;
+  sculpting: {
+    active: boolean;
+    state: 'ready' | 'aiming' | 'flying' | 'reloading';
+    meteorSize: 'small' | 'medium' | 'large';
+    craterCount: number;
+    mareCount: number;
+    selectedCraterId: number | null;
+    selectedCraterState: 'fresh' | 'erupting' | 'cooling' | 'mare' | null;
+    canErupt: boolean;
+    lavaProgress: number;
+    projectileSpeed: number;
+    lastImpactNormal: { x: number; y: number; z: number } | null;
+    physics: {
+      engine: 'custom-fixed-step';
+      timestep: number;
+      bodies: number;
+      colliders: number;
+      ccd: boolean;
+    };
+  };
   lineIndex: number;
   typing: boolean;
   player: {

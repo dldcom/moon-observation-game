@@ -18,7 +18,7 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev',
     url: 'http://127.0.0.1:5188',
-    reuseExistingServer: false,
+    reuseExistingServer: !process.env.CI,
     timeout: 20_000,
   },
   projects: [
@@ -30,7 +30,7 @@ export default defineConfig({
         // bundled headless shell, which has no GPU backend and falls back to
         // SwiftShader (CPU) — roughly 4x slower raster and meaningless FPS.
         // The full Chromium build renders headless on the real GPU.
-        channel: 'chromium',
+        channel: 'chrome',
         viewport: { width: 1280, height: 720 },
       },
     },
@@ -39,7 +39,7 @@ export default defineConfig({
       use: {
         ...devices['iPhone 13'],
         browserName: 'chromium',
-        channel: 'chromium',
+        channel: 'chrome',
       },
     },
   ],
